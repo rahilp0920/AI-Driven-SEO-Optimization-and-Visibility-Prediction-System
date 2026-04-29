@@ -3,20 +3,42 @@
 Every modeling choice is captured here with the prior result that motivated it. CIS 2450 weights
 codebase polish at 83/143 points and explicitly penalizes silent modeling choices.
 
-## Comparison table (filled after the sweep runs)
+## Comparison table
 
-| Model | F1 | ROC-AUC | PR-AUC | Precision | Recall | n_test | n_pos_test | best_params (abridged) |
-|-------|----|---------|--------|-----------|--------|--------|------------|------------------------|
-| Logistic Regression | TBD | TBD | TBD | TBD | TBD | TBD | TBD | C, penalty, class_weight |
-| Random Forest       | TBD | TBD | TBD | TBD | TBD | TBD | TBD | n_estimators, max_depth, min_samples_leaf, class_weight |
-| XGBoost             | TBD | TBD | TBD | TBD | TBD | TBD | TBD | learning_rate, max_depth, n_estimators, subsample |
-| MLP (PyTorch)       | TBD | TBD | TBD | TBD | TBD | TBD | TBD | hidden_dims, dropout, epochs (Colab) |
+⚠️ **Two number sets coexist below.** The "demo (synthetic labels)" row was produced on a
+100-page smoke-test corpus with synthetic SERP labels (`scripts/synthesize_serp.py`,
+~30% positive rate, random correlation to source URL). It exists only to verify the pipeline
+runs end-to-end and to seed the dashboard with non-trivial models. **For the graded
+submission, replace `data/interim/serp.csv` with real Brave/SerpApi fetches and re-run the
+sweep — the numbers below will change substantially.**
+
+### Demo run (2026-04-29 — synthetic labels, n_test=20)
+
+| Model | Accuracy | F1 | ROC-AUC | PR-AUC | Precision | Recall | TP | FP | FN | TN |
+|-------|----------|----|---------|--------|-----------|--------|----|----|----|----|
+| Logistic Regression | 0.60 | 0.429 | 0.653 | 0.488 | 0.333 | 0.600 | 3 | 6 | 2 | 9 |
+| Random Forest       | 0.60 | 0.200 | 0.560 | 0.294 | 0.200 | 0.200 | 1 | 4 | 4 | 11 |
+| **XGBoost**         | **0.75** | **0.615** | **0.693** | **0.376** | **0.500** | **0.800** | **4** | **4** | **1** | **11** |
+| MLP (PyTorch)       | not-trained-this-run | — | — | — | — | — | — | — | — | — |
+
+**Demo winner:** **XGBoost** (F1=0.615, ROC-AUC=0.693, accuracy=0.75 on a 20-page held-out
+test set with 5 positive labels). Note: accuracy alone is misleading on imbalanced data — the
+all-negative classifier scores 0.75 here (15/20). F1 + PR-AUC are the metrics that matter.
+
+### Real run (TBD — once `serp_client fetch` runs against Brave/SerpApi on the full ~1500-page corpus)
+
+| Model | Accuracy | F1 | ROC-AUC | PR-AUC | Precision | Recall | best_params (abridged) |
+|-------|----------|----|---------|--------|-----------|--------|------------------------|
+| Logistic Regression | TBD | TBD | TBD | TBD | TBD | TBD | C, penalty, class_weight |
+| Random Forest       | TBD | TBD | TBD | TBD | TBD | TBD | n_estimators, max_depth, min_samples_leaf, class_weight |
+| XGBoost             | TBD | TBD | TBD | TBD | TBD | TBD | learning_rate, max_depth, n_estimators, subsample |
+| MLP (PyTorch)       | TBD | TBD | TBD | TBD | TBD | TBD | hidden_dims, dropout, epochs (Colab) |
 
 **Selection rule:** F1 first; if F1 is within 1% across two models, prefer the one with higher
 PR-AUC (puts more positives near the top of the ranked list — the SEO-recommendation failure
 mode that matters most).
 
-**Winner:** _to be filled after `notebooks/03_model_comparison.ipynb` runs._
+**Real-run winner:** _to be filled after the real sweep finishes._
 
 ## Cut models (deadline-scoped)
 
