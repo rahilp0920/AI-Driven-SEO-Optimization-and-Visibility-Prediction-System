@@ -3,11 +3,14 @@
   "granularity": "fine",
   "parallelization": false,
   "commit_docs": true,
-  "model_profile": "balanced",
+  "model_profile": "budget",
+  "models": {
+    "profile": "budget"
+  },
   "workflow": {
     "research": false,
-    "plan_check": true,
-    "verifier": true,
+    "plan_check": false,
+    "verifier": false,
     "nyquist_validation": true,
     "auto_advance": true,
     "compliance_gate": true
