@@ -1,0 +1,17 @@
+# Force light theme + match the custom palette in src/dashboard/styles.py.
+# Without this, streamlit follows the system theme and dark-mode users see
+# white text on the light gradient background — unreadable.
+
+[theme]
+base = "light"
+primaryColor = "#4f46e5"
+backgroundColor = "#f8fafc"
+secondaryBackgroundColor = "#ffffff"
+textColor = "#0f172a"
+font = "sans serif"
+
+[browser]
+gatherUsageStats = false
+
+[server]
+headless = true

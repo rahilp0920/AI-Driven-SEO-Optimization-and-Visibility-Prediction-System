@@ -27,6 +27,47 @@ CUSTOM_CSS = """
 
 .stApp {
     background: linear-gradient(180deg, #f8fafc 0%, #eef2ff 100%);
+    color: var(--text);
+}
+
+/* Force dark text on the light background regardless of system theme.
+   Streamlit applies its own theme color to most elements, which can render
+   white on our light background when the user's system is in dark mode. */
+.stApp,
+.stApp p,
+.stApp label,
+.stApp span,
+.stApp li,
+.stApp div[data-testid="stMarkdownContainer"],
+.stApp div[data-testid="stMarkdownContainer"] *,
+.stApp [data-testid="stWidgetLabel"],
+.stApp [data-testid="stWidgetLabel"] *,
+.stApp [data-testid="stCaptionContainer"],
+.stApp [data-testid="stCaptionContainer"] * {
+    color: var(--text) !important;
+}
+
+.stApp h1, .stApp h2, .stApp h3, .stApp h4, .stApp h5, .stApp h6 {
+    color: var(--text) !important;
+}
+
+/* Sidebar override: keep light text on the dark sidebar. */
+[data-testid="stSidebar"] .stApp,
+[data-testid="stSidebar"] p,
+[data-testid="stSidebar"] label,
+[data-testid="stSidebar"] span,
+[data-testid="stSidebar"] li,
+[data-testid="stSidebar"] div[data-testid="stMarkdownContainer"],
+[data-testid="stSidebar"] div[data-testid="stMarkdownContainer"] * {
+    color: #e2e8f0 !important;
+}
+
+/* Inputs need explicit colors too. */
+.stTextInput input,
+.stNumberInput input,
+.stTextArea textarea {
+    color: var(--text) !important;
+    background: #ffffff !important;
 }
 
 [data-testid="stSidebar"] {
