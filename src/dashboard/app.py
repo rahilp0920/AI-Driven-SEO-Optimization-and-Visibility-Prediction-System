@@ -20,10 +20,18 @@ Run:
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
+# Streamlit runs this file as a script, not a module — repo root isn't on sys.path
+# by default, so `from src.dashboard.styles import ...` would fail. Inject it.
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
 import io
 import logging
 import urllib.parse
-from pathlib import Path
 from typing import Any
 
 import joblib
