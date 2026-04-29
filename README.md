@@ -1,0 +1,143 @@
+# AI-Driven SEO Ranking Predictor & Recommendation System
+
+Joint final project for **CIS 2450** (Big Data Analytics, due 2026-04-30) and **NETS 1500**
+(HW5 Implementation Project, due 2026-04-29).
+
+A binary classifier that predicts whether a developer documentation page appears in Google's
+top-10 SERP for the topic query derived from its `<title>`, plus a Streamlit dashboard with a
+SHAP-driven what-if simulator and concrete per-page recommendations.
+
+**Authors:** Rahil Patel (`rahilp07@seas.upenn.edu`), Ayush Tripathi (`tripath1@seas.upenn.edu`).
+
+## Pivot rationale (sanctioned)
+
+> Per CIS 2450 TA Ricky Gong's email of 2026-03-29, the project was narrowed from the original
+> 50K-row scope to ~1500 developer documentation pages because full-scale free-tier scraping
+> is rate-limited. This is sanctioned, not a deviation.
+
+## Quickstart
+
+See **[USER_MANUAL.md](USER_MANUAL.md)** for the full step-by-step with screenshots. TL;DR:
+
+```bash
+pip install -r requirements.txt
+cp .env.example .env                              # then add BRAVE_SEARCH_KEY or SERPAPI_KEY
+python -m src.scraping.doc_scraper --domain docs.python.org --limit 300   # repeat per domain
+python -m src.scraping.serp_client build-queries
+python -m src.scraping.serp_client fetch
+python -m src.features.build_features
+python -m src.graph.build_graph
+python -m src.graph.graph_features
+python -m src.models.{baseline,tree_models,boosting,neural}
+streamlit run src/dashboard/app.py
+```
+
+## CIS 2450 rubric → file map
+
+Every rubric line points to the file that satisfies it. Anchor points for graders.
+
+### Hard requirements (failing any = automatic 0)
+
+| Requirement | Where |
+|-------------|-------|
+| Free, public, legal data | [`src/scraping/doc_scraper.py`](src/scraping/doc_scraper.py) — `urllib.robotparser` per domain, polite User-Agent, configurable rate limit. [`data/README.md`](data/README.md) — full policy. |
+| ≥2 distinct data sources | Scraped HTML ([`doc_scraper.py`](src/scraping/doc_scraper.py)) + Google SERP via Brave/SerpApi ([`serp_client.py`](src/scraping/serp_client.py)). |
+| 50K rows (or documented narrower-domain pivot) | Pivot documented verbatim in [`data/README.md`](data/README.md) (and above). |
+| 7-10+ feature columns | [`data/processed/features.csv`](data/processed/features.csv) ≈ 78 numeric columns: 5 content + 4 metadata + 7 structural + 50 TF-IDF + 6 graph. |
+| AI usage documented in detail | [`readme.txt`](readme.txt), `About` tab in [`src/dashboard/app.py`](src/dashboard/app.py), and the AI-usage slide in `presentation/slides.pdf`. |
+
+### Codebase (83 pts)
+
+| Rubric item | Where |
+|-------------|-------|
+| Modularity | `src/{scraping,features,graph,models,recommendations,dashboard}/` — clean per-concern packages. |
+| Documentation | Every module has a top-of-file docstring; every function has docstring + type hints. [`README.md`](README.md), [`USER_MANUAL.md`](USER_MANUAL.md), [`MODELING_DECISIONS.md`](MODELING_DECISIONS.md), [`data/README.md`](data/README.md). |
+| Readability | `from __future__ import annotations` everywhere, no dead code, consistent naming. |
+| Equal contributions | `git log --pretty="%an"` — commits attributed to both Rahil and Ayush. Work split in [`readme.txt`](readme.txt) and below. |
+| Version control | Atomic commits, no single dump commit. See `git log`. |
+| EDA | [`notebooks/01_eda.ipynb`](notebooks/01_eda.ipynb) — 5 ≥300 DPI charts, each with a markdown cell tying it to a downstream modeling decision. Saved to [`assets/charts/`](assets/charts/). |
+| Modeling — baseline → advanced progression | [`src/models/baseline.py`](src/models/baseline.py) (LR) → [`tree_models.py`](src/models/tree_models.py) (RF) → [`boosting.py`](src/models/boosting.py) (XGBoost) → [`neural.py`](src/models/neural.py) (MLP). |
+| Imbalanced-data metrics | F1 + ROC-AUC + PR-AUC + confusion matrix in [`src/models/evaluate.py`](src/models/evaluate.py). PR-AUC is the tiebreaker. |
+| Hyperparameter tuning documented | RandomizedSearchCV in every model file (`PARAM_DIST` constants), search results saved to `models/metrics/*.json`. |
+| Interactive demo runs | [`src/dashboard/app.py`](src/dashboard/app.py) — `streamlit run src/dashboard/app.py`. |
+
+### Dashboard demo (20 pts)
+
+| Item | Where |
+|------|-------|
+| Interactive (not static) | Live URL → scrape → predict + sliders + tabs. |
+| Showcases full capabilities | Predict / Recommendations / What-if / About tabs. |
+| Polish comparable to homework dashboards | Custom CSS in [`src/dashboard/styles.py`](src/dashboard/styles.py) — gradient banner, metric cards, SHAP rows. |
+| Demo data fallback | `demo_row()` in [`app.py`](src/dashboard/app.py) — used automatically if live scrape fails. |
+| MLP loaded via rubric §VI checkpoint pattern | `load_checkpoint()` in [`src/models/neural.py`](src/models/neural.py) reconstructs `MLPInferenceWrapper` from `state_dict + config + scaler + feature_names`. Dashboard uses it directly. |
+
+### Presentation & recording (10 pts)
+
+| Item | Where |
+|------|-------|
+| 8-10 minute hard window | `presentation/recording.mp4` (verify duration). |
+| Slides as PDF, no code on slides | `presentation/slides.pdf`. |
+| Both members audibly speak | Recording. |
+| Coverage: objective, data, EDA, modeling, implications, challenges | Slide deck outline in `presentation/`. |
+| AI-usage disclosure slide | Slide deck. |
+
+### Modeling progression — see [`MODELING_DECISIONS.md`](MODELING_DECISIONS.md)
+
+- **Sweep:** LR → RF → XGBoost → MLP (4 models). Reduced from the proposed 8 (LightGBM,
+  CatBoost, GBM, SVM-RBF cut for the deadline).
+- **Cut justification:** LightGBM/CatBoost converge to within 1-3% F1 of XGBoost on tabular
+  binary classification at this dataset size; GBM is superseded by XGBoost in the same family;
+  SVM-RBF scales poorly to TF-IDF dimensionality. Retained 4 cover the four model families
+  (linear → bagging → boosting → neural).
+
+## NETS 1500 rubric → file map (HW5)
+
+| Item | Where |
+|------|-------|
+| Code (well-organized, runnable) | `src/`, `requirements.txt`, [`USER_MANUAL.md`](USER_MANUAL.md). |
+| User manual with screenshots | [`USER_MANUAL.md`](USER_MANUAL.md) — every dashboard feature captioned. |
+| `readme.txt` (1 page) | [`readme.txt`](readme.txt). |
+| Course-topic integration: ≥2 categories | Information Networks (WWW), Information Retrieval (TF-IDF), Graph algorithms (PageRank/HITS/clustering). 3 of 7. |
+| Specific prediction target (Shivani) | "Top-10 SERP for query derived from `<title>`" — top-of-this-file + dashboard About. |
+| Specific data sources (Shivani) | Domain table + rate-limit policy in [`data/README.md`](data/README.md). |
+| Specific graph algorithms (Shivani) | PageRank (α=0.85), HITS hub+authority, clustering coefficient — implemented in [`src/graph/graph_features.py`](src/graph/graph_features.py), explained in [`notebooks/02_graph_analysis.ipynb`](notebooks/02_graph_analysis.ipynb). |
+| Backup-plan execution (Ricky) | 1500-page narrowed-domain pivot, sanctioned via Ricky 3/29 email (quoted above). |
+
+## Repository layout
+
+```
+.
+├── README.md                  ← rubric→file map (this file)
+├── readme.txt                 ← NETS 1500 1-page submission
+├── USER_MANUAL.md             ← screenshots + how-to
+├── MODELING_DECISIONS.md      ← per-model decision log + cut models
+├── requirements.txt
+├── .env.example
+├── data/
+│   ├── README.md              ← pivot rationale + sources + rate-limit policy
+│   ├── raw/<domain>/          ← scraped HTML + JSON sidecars
+│   ├── interim/               ← queries.csv, serp.csv, graph.pkl
+│   └── processed/features.csv ← final feature matrix
+├── src/
+│   ├── scraping/              ← doc_scraper.py, serp_client.py
+│   ├── features/              ← content/metadata/structural + build_features
+│   ├── graph/                 ← build_graph.py, graph_features.py
+│   ├── models/                ← baseline, tree_models, boosting, neural, evaluate
+│   ├── recommendations/       ← recommend.py
+│   └── dashboard/             ← app.py, styles.py
+├── notebooks/
+│   ├── 01_eda.ipynb
+│   ├── 02_graph_analysis.ipynb
+│   └── 03_model_comparison.ipynb
+├── tests/                     ← pytest smoke tests
+├── assets/charts/             ← EDA + SHAP plots (≥300 DPI)
+├── presentation/              ← slides.pdf + recording.mp4
+└── .planning/                 ← project planning artifacts
+```
+
+## License & ethics
+
+Public, legal data only. Crawler respects `robots.txt` per domain and identifies itself with a
+contact email in the User-Agent header. SERP rankings are fetched through public commercial
+APIs (Brave Search, SerpApi) within their free-tier ToS. No login walls, no paywalls, no
+PII scraped.
