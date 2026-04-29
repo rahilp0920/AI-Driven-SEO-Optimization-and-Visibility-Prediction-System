@@ -1,0 +1,26 @@
+{
+  "mode": "yolo",
+  "granularity": "fine",
+  "parallelization": false,
+  "commit_docs": true,
+  "model_profile": "balanced",
+  "workflow": {
+    "research": false,
+    "plan_check": true,
+    "verifier": true,
+    "nyquist_validation": true,
+    "auto_advance": true,
+    "compliance_gate": true
+  },
+  "compliance": {
+    "mcp_server": "project-compliance",
+    "tool": "full_compliance_check",
+    "run_after_each_phase": true,
+    "p0_on_flag": true,
+    "rationale": "CIS 2450 (143 pts, due 2026-04-30 23:59) and NETS 1500 (85 pts, due 2026-04-29 23:59) graded against external rubrics. Treat MCP compliance check as ground truth. Any flagged gap is a P0 blocker."
+  },
+  "deadlines": {
+    "nets1500": "2026-04-29T23:59:00",
+    "cis2450": "2026-04-30T23:59:00"
+  }
+}
