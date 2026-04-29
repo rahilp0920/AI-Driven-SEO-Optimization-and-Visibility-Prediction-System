@@ -234,7 +234,7 @@ def tab_predict(state: dict[str, Any]) -> None:
 
     vec, feature_cols = state["vec"], state["feature_cols"]
 
-    if use_demo or (not state.get("features") and not do_scrape):
+    if use_demo or (state.get("features") is None and not do_scrape):
         features, used_url, query = demo_row(feature_cols)
         state.update(features=features, url=used_url, query=query, source="demo")
 
