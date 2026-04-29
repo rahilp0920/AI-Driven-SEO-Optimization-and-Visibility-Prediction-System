@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+.python-version
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Streamlit
+.streamlit/secrets.toml
+
+# Environment
+.env
+.env.local
+
+# Data — raw/interim are large; processed feature matrix is OK to commit
+data/raw/
+data/interim/
+# data/processed/ — committed for reproducibility
+
+# Models — checkpoints can be large; keep small ones tracked
+models/*.ckpt
+models/*.pt
+!models/.gitkeep
+
+# OS / IDE
+.DS_Store
+.idea/
+.vscode/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
