@@ -34,6 +34,7 @@ import urllib.parse
 from typing import Any
 
 import joblib
+import numpy as np
 import pandas as pd
 import streamlit as st
 from bs4 import BeautifulSoup
@@ -140,13 +141,85 @@ def load_corpus_tfidf() -> tuple[Any, list[str]]:
             texts.append("")
             continue
         try:
-            html = html_path.read_text(encoding="utf-8", errors="replace")
-            texts.append(BeautifulSoup(html, "lxml").get_text(" ", strip=True))
+            html_text = html_path.read_text(encoding="utf-8", errors="replace")
+            texts.append(BeautifulSoup(html_text, "lxml").get_text(" ", strip=True))
         except OSError:
             texts.append("")
     non_empty = [t for t in texts if t]
     vec = fit_tfidf(non_empty, max_features=50) if non_empty else None
     return vec, feature_cols
+
+
+GRAPH_FEATURE_COLS: tuple[str, ...] = (
+    "pagerank",
+    "hits_hub",
+    "hits_authority",
+    "in_degree",
+    "out_degree",
+    "clustering",
+)
+
+
+@st.cache_resource(show_spinner=False)
+def load_graph_medians() -> dict[str, float]:
+    """Return per-column medians of the corpus graph features.
+
+    Live URLs are not part of the training link graph, so their PageRank /
+    HITS / degree values are unknown. Zero-filling those columns biases the
+    models negatively (they learned that low graph scores correlate with
+    out-of-top-10). Falling back to the training-set **median** is a
+    much less biased default; it neither rewards nor penalises the live
+    page on graph signals it cannot supply.
+    """
+    if not FEATURES_CSV.exists():
+        return {}
+    df = pd.read_csv(FEATURES_CSV)
+    return {c: float(df[c].median()) for c in GRAPH_FEATURE_COLS if c in df.columns}
+
+
+@st.cache_resource(show_spinner="Computing reference distributions…")
+def load_reference_probs(_models: dict[str, Any], feature_cols: tuple[str, ...]) -> dict[str, np.ndarray]:
+    """Run each loaded model over the **known top-10 (positive)** training
+    rows — with **graph features replaced by the corpus median** — so the
+    dashboard can express live predictions as percentiles within the
+    population of pages we know rank top-10, evaluated under the same
+    "no link-graph signal" conditions a live URL faces.
+    Returns ``{model_name: sorted_proba_array}``.
+
+    Reference choice rationale: the corpus is class-balanced, so a full-
+    distribution percentile saturates around the 70s even for a textbook
+    top-10 page. Filtering to positives lets the score read as "how does
+    this page compare to known top-10 pages?". Median-filling graph
+    features in the reference (matching live featurization) keeps the
+    comparison apples-to-apples — without this, live pages are
+    systematically penalised because the reference still has its real
+    PageRank / HITS / degree signal.
+
+    The leading-underscore on ``_models`` tells Streamlit to skip hashing
+    it (model objects aren't reliably hashable). ``feature_cols`` is a
+    tuple so the cache key is stable across reruns.
+    """
+    if not FEATURES_CSV.exists() or not _models:
+        return {}
+    df = pd.read_csv(FEATURES_CSV)
+    if "is_top_10" in df.columns:
+        df = df[df["is_top_10"] == 1]
+    if df.empty:
+        return {}
+    cols = [c for c in feature_cols if c in df.columns]
+    X = df[cols].select_dtypes(include=[np.number]).fillna(0.0).copy()
+    full_df = pd.read_csv(FEATURES_CSV)
+    for c in GRAPH_FEATURE_COLS:
+        if c in X.columns and c in full_df.columns:
+            X[c] = float(full_df[c].median())
+    out: dict[str, np.ndarray] = {}
+    for name, model in _models.items():
+        try:
+            p = np.asarray(model.predict_proba(X)[:, 1], dtype=float)
+            out[name] = np.sort(p)
+        except Exception as exc:  # noqa: BLE001
+            LOG.warning("reference predict_proba failed for %s: %s", name, exc)
+    return out
 
 
 # ─────────────────────────────────── live scraping ───────────────────────────────────
@@ -155,7 +228,7 @@ def load_corpus_tfidf() -> tuple[Any, list[str]]:
 def scrape_one(url: str, timeout: float = 15.0) -> tuple[BeautifulSoup, str] | None:
     """Fetch a single URL synchronously. Returns (soup, text) or None on failure."""
     import httpx
-    headers = {"User-Agent": "AIDrivenSEOResearchBot/1.0 (dashboard live demo)"}
+    headers = {"User-Agent": "AIDrivenSEOResearchBot/1.0 (dashboard scrape)"}
     try:
         with httpx.Client(headers=headers, follow_redirects=True, timeout=timeout) as client:
             resp = client.get(url)
@@ -272,7 +345,86 @@ def render_shap_row(name: str, value: float, vmax: float) -> None:
     )
 
 
+def _render_seo_score(
+    score_info: dict[str, Any],
+    probs: dict[str, float],
+    refs: dict[str, np.ndarray],
+) -> None:
+    """Headline SEO score (percentile-rank ensemble), agreement, and per-model
+    breakdown in a collapsible expander."""
+    score = score_info.get("score", float("nan"))
+    verdict = str(score_info.get("verdict", "n/a"))
+    agreement = str(score_info.get("agreement", "n/a"))
+    pct: dict[str, float] = score_info.get("per_model") or {}
+
+    if not refs or not pct or not np.isfinite(score):
+        st.warning(
+            "SEO score unavailable — reference distribution missing. "
+            "Showing per-model probabilities only."
+        )
+        cols = st.columns(len(probs)) if probs else []
+        for col, (name, p) in zip(cols, sorted(probs.items())):
+            with col:
+                klass = "good" if p >= 0.5 else ("warn" if p >= 0.3 else "bad")
+                render_metric_card(f"{name} P(top-10)", f"{p*100:.1f}%", klass=klass)
+        return
+
+    if verdict == "Strong":
+        klass = "good"
+    elif verdict == "Moderate":
+        klass = "warn"
+    else:
+        klass = "bad"
+
+    headline_cols = st.columns([2, 1, 1])
+    with headline_cols[0]:
+        render_metric_card("SEO score", f"{score:.0f} / 100", klass=klass)
+    with headline_cols[1]:
+        render_metric_card("Verdict", verdict, klass=klass)
+    with headline_cols[2]:
+        render_metric_card("Model agreement", agreement, klass="" if agreement == "high" else "warn")
+
+    st.progress(
+        min(1.0, max(0.0, score / 100.0)),
+        text=(
+            f"{verdict} SEO signal — page ranks at the {score:.0f}th percentile "
+            f"among known top-10 pages (ensemble)."
+        ),
+    )
+
+    st.caption(
+        "Score = mean of per-model **percentile ranks** of the page's predicted top-10 "
+        "probability **among known top-10 (positive) training pages**. Higher = looks more "
+        "like a top-10 page than the training positives. Live pages have unknown link-graph "
+        "features, so PageRank/HITS/degrees are filled with the corpus median."
+    )
+
+    with st.expander("Per-model breakdown", expanded=False):
+        cols = st.columns(len(probs))
+        for col, name in zip(cols, sorted(probs)):
+            p = probs[name]
+            pc = pct.get(name, float("nan"))
+            with col:
+                pclass = "good" if pc >= 70 else ("warn" if pc >= 40 else "bad")
+                render_metric_card(name, f"P={p*100:.1f}%", klass=pclass)
+                st.caption(f"percentile: {pc:.0f}")
+
+
 # ─────────────────────────────────── tabs ───────────────────────────────────
+
+
+def _manual_query_override() -> str:
+    """Reads the optional topic-query widget (Streamlit session key)."""
+    return (st.session_state.get("topic_query_override") or "").strip()
+
+
+def _resolve_topic_query(soup: BeautifulSoup) -> tuple[str, str, str]:
+    """Return ``(query_used_for_features, title_derived_query, 'manual'|'title')``."""
+    derived = derive_query(soup) or "(no title)"
+    manual = _manual_query_override()
+    if manual:
+        return manual, derived, "manual"
+    return derived, derived, "title"
 
 
 def tab_predict(state: dict[str, Any]) -> None:
@@ -299,6 +451,7 @@ def tab_predict(state: dict[str, Any]) -> None:
     use_demo = col_c.button("Use demo page", width="stretch")
 
     vec, feature_cols = state["vec"], state["feature_cols"]
+    graph_defaults = state.get("graph_medians") or {}
 
     if use_demo or (state.get("features") is None and not do_scrape and not do_requery):
         features, used_url, query = demo_row(feature_cols)
@@ -700,6 +853,13 @@ def main() -> None:
                    "PyTorch · NetworkX · SHAP · Plotly · Streamlit")
 
     models = load_models()
+    if not FEATURES_CSV.exists():
+        st.error(
+            f"Missing `{FEATURES_CSV}` — run `make features` (after scrape + SERP) so the "
+            "dashboard can align TF-IDF and column order with training."
+        )
+        st.stop()
+
     vec, feature_cols = load_corpus_tfidf()
     if not feature_cols:
         feature_cols = [

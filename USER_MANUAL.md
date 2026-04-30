@@ -141,6 +141,11 @@ as `assets/screenshots/03_model_comparison.png`.)*
 
 ## 4. Run the dashboard
 
+**Prerequisite:** `data/processed/features.csv` must exist (from §2.4 / `make features`). The
+app reads it to recover feature column order and to refit TF-IDF on corpus text from
+`data/raw/` when available. Trained model files under `models/` (see §3) are required for
+predictions.
+
 ```bash
 streamlit run src/dashboard/app.py
 ```
@@ -149,19 +154,40 @@ Opens at `http://localhost:8501`. The sidebar has four tabs.
 
 ### 4.1 — Predict tab
 
-Paste a documentation URL, click **Scrape & predict**. The dashboard live-scrapes the page,
-extracts the same feature set used in training (zero-fills graph features since the live page
-isn't in the corpus), runs every loaded model, and shows a metric card per model with the
-top-10 probability. The progress bar reflects the highest-confidence model.
+Paste a documentation URL, then click **Scrape & predict**. The dashboard fetches the page
+over HTTP (no SERP API key needed for this step), extracts the same feature set used in
+training (zero-fills graph features since the live page is not in the corpus graph), and
+runs every loaded model.
 
-If the URL fails (network error, 403, etc.), the dashboard automatically falls back to a
-pre-baked **demo page** (`docs.python.org/3/library/asyncio.html`) so the demo never breaks.
+**Headline output — SEO score (0–100).** The dashboard converts each model's `P(top-10)`
+for the live page into a **percentile rank within the population of known top-10 (positive)
+training pages**, then averages those percentiles into a single SEO score. Reading: at the
+50th percentile the page looks **as plausible as the median top-10 page**; at the 80th it
+looks **better than 80% of known top-10 pages**. A verdict bucket (Strong ≥ 70, Moderate
+40–69, Weak < 40) and a **model agreement** indicator (high / mixed / low spread across
+models) are shown beside the score. Per-model probabilities and their percentiles remain
+available under "Per-model breakdown".
 
-**Screenshot:** `assets/screenshots/04_dashboard_predict.png`
+**Graph features for live URLs.** The live page is not in the training link graph, so its
+true PageRank / HITS / degree values are unknown. The dashboard fills them with the corpus
+**median** rather than 0 — zero-fill biases models negatively because they learned that low
+graph scores correlate with not ranking.
+
+**Topic query:** By default the query string matches the training pipeline (stripped from
+`<title>`). If that string is misleading (e.g. a docs root title that becomes only a version
+number), use **Topic query override** and either scrape again or click **Re-predict with query
+only** to re-featurize the last page with your query (keyword features update; SERP is not
+re-fetched).
+
+If the URL is empty, you get a warning. If the fetch fails (network error, timeout, HTTP
+error), you get an error and no placeholder scores — fix connectivity or try another URL.
+
+**Screenshot:** `assets/screenshots/04_dashboard_predict.png` *(use a successful live scrape
+for the rubric; avoid empty error states in submission captures.)*
 
 ### 4.2 — Recommendations tab
 
-After running a prediction, this tab shows ≥3 actionable suggestions ranked by SHAP impact.
+After a **successful** prediction on the Predict tab, this tab shows ≥3 actionable suggestions ranked by SHAP impact.
 Each card shows the action ("Title is 80 chars — shorten to 30-60"), the responsible feature
 (tag), and a "why" line explaining the SEO rationale. Suggestions are computed by
 `src/recommendations/recommend.py` — rules-based core, SHAP-ranked when a tree model is loaded.
@@ -170,10 +196,12 @@ Each card shows the action ("Title is 80 chars — shorten to 30-60"), the respo
 
 ### 4.3 — What-if tab
 
-Eight live sliders (title length, meta description length, H2 count, alt-text coverage,
-keyword density, internal-link count, word count, keyword-in-title binary). Move any slider —
-the metric cards update instantly with the new probability and the **delta vs the original
-page**. Green = improvement, red = regression.
+Requires a successful prediction first (same session state as Predict). Eight live sliders
+(title length, meta description length, H2 count, alt-text coverage, keyword density,
+internal-link count, word count, keyword-in-title binary). Move any slider — the headline
+**SEO score** and verdict update instantly, and a **Δ vs original** card shows the change in
+score (green = improvement, red = regression). Per-model probability deltas remain available
+under "Per-model breakdown".
 
 **Screenshot:** `assets/screenshots/06_dashboard_whatif.png`
 
@@ -193,6 +221,7 @@ broken down by category (what we used AI for, what we did NOT use AI for), and t
 | `no SERP API key found` on `serp_client fetch` | Add `BRAVE_SEARCH_KEY` or `SERPAPI_KEY` to `.env`. |
 | Scraper hangs on a single domain | Check the domain's `robots.txt` — some sites disallow `/`; raise `--delay` or skip the domain. |
 | Dashboard shows "No trained models loaded" | Run §3 first; at minimum train XGBoost. |
+| Dashboard error about missing `data/processed/features.csv` | Run §2.4 (`make features` or the three `python -m` commands) before starting Streamlit. |
 | MLP checkpoint won't load | Confirm the file came from the *same* `requirements.txt` — torch version matters. Use `--evaluate-only` to test load. |
 | Streamlit looks like default white box | Browser may have cached an old CSS — hard refresh (cmd-shift-R / ctrl-shift-R). |
 
