@@ -228,15 +228,29 @@ def render_shap_row(name: str, value: float, vmax: float) -> None:
 def tab_predict(state: dict[str, Any]) -> None:
     st.markdown("### Predict top-10 SERP probability")
     url = st.text_input("Page URL", value=state.get("url", DEMO_URL))
-    col_a, col_b = st.columns([1, 1])
+
+    # Custom query override — the auto-derived <title> query is often too
+    # generic (e.g. "Python Frequently Asked Questions") which tanks
+    # keyword_density / keyword_in_title features. Letting the user type
+    # the actual topic they care about is the single biggest quality lever.
+    query_input = st.text_input(
+        "Topic query (override)",
+        value=state.get("query", ""),
+        help="Auto-filled from the page title after scraping. Edit to use your own search query.",
+    )
+
+    col_a, col_b, col_c = st.columns([1, 1, 1])
     do_scrape = col_a.button("Scrape & predict", type="primary", use_container_width=True)
-    use_demo = col_b.button("Use demo page", use_container_width=True)
+    do_requery = col_b.button("Apply query", use_container_width=True,
+                              help="Recompute features with the query above (no rescrape).")
+    use_demo = col_c.button("Use demo page", use_container_width=True)
 
     vec, feature_cols = state["vec"], state["feature_cols"]
 
-    if use_demo or (state.get("features") is None and not do_scrape):
+    if use_demo or (state.get("features") is None and not do_scrape and not do_requery):
         features, used_url, query = demo_row(feature_cols)
-        state.update(features=features, url=used_url, query=query, source="demo")
+        state.update(features=features, url=used_url, query=query, source="demo",
+                     soup=None, text=None)
 
     if do_scrape and url:
         with st.spinner(f"Scraping {url} …"):
@@ -244,12 +258,27 @@ def tab_predict(state: dict[str, Any]) -> None:
         if res is None:
             st.warning("Live scrape failed — showing demo page instead.")
             features, used_url, query = demo_row(feature_cols)
-            state.update(features=features, url=used_url, query=query, source="demo (fallback)")
+            state.update(features=features, url=used_url, query=query, source="demo (fallback)",
+                         soup=None, text=None)
         else:
             soup, text = res
-            query = derive_query(soup) or "(no title)"
+            # If user typed a custom query before scraping, honor it; otherwise auto-derive.
+            query = query_input.strip() or derive_query(soup) or "(no title)"
             features = featurize(url, soup, text, query, vec, feature_cols)
-            state.update(features=features, url=url, query=query, source="live")
+            state.update(features=features, url=url, query=query, source="live",
+                         soup=soup, text=text)
+
+    if do_requery and query_input.strip():
+        new_query = query_input.strip()
+        soup, text = state.get("soup"), state.get("text")
+        if soup is not None and text is not None:
+            features = featurize(state["url"], soup, text, new_query, vec, feature_cols)
+            state.update(features=features, query=new_query, source="live (custom query)")
+        else:
+            # No scraped HTML cached (e.g. demo page) — just record the query
+            # so recommendations and what-if see it. Numeric features stay as-is.
+            state.update(query=new_query,
+                         source=f"{state.get('source', 'demo')} + custom query")
 
     features = state["features"]
     probs = predict_with_models(features, state["models"])
@@ -386,7 +415,9 @@ def main() -> None:
 
     state = st.session_state.setdefault(
         "_state",
-        {"features": None, "url": "", "query": "", "source": "", "models": models, "vec": vec, "feature_cols": feature_cols},
+        {"features": None, "url": "", "query": "", "source": "",
+         "soup": None, "text": None,
+         "models": models, "vec": vec, "feature_cols": feature_cols},
     )
     state["models"] = models
     state["vec"] = vec
