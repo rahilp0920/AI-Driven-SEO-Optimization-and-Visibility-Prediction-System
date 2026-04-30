@@ -60,8 +60,7 @@ Final sweep: **4 models — LR, RF, XGBoost, MLP.**
   gain. Cut to keep the evaluation pipeline uniform.
 
 The retained 4 still cover the four model families the rubric expects (linear / bagging /
-boosting / neural), preserving the baseline-to-advanced progression story. **Per the NETS 1500
-submission rule, this change from the proposal is also disclosed in `readme.txt`.**
+boosting / neural), preserving the baseline-to-advanced progression story.
 
 ## Kept models
 
