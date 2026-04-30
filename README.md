@@ -81,7 +81,7 @@ Every rubric line points to the file that satisfies it. Anchor points for grader
 | Interactive (not static) | Live URL → scrape → predict + sliders + tabs. |
 | Showcases full capabilities | Predict / Recommendations / What-if / About tabs. |
 | Polish comparable to homework dashboards | Custom CSS in [`src/dashboard/styles.py`](src/dashboard/styles.py) — gradient banner, metric cards, SHAP rows. |
-| Demo data fallback | `demo_row()` in [`app.py`](src/dashboard/app.py) — used automatically if live scrape fails. |
+| Predict tab (live only) | [`src/dashboard/app.py`](src/dashboard/app.py) — **Scrape & predict**: HTTP fetch, featurization aligned to training. Headline **SEO score (0–100)** built from per-model **percentile ranks** within the trained corpus, averaged across loaded models, with verdict bucket and model-agreement indicator. Optional **topic query override** + **Re-predict with query only** when the `<title>`-derived query is a poor keyword. Requires `data/processed/features.csv`. No synthetic demo fallback if scrape fails. |
 | MLP loaded via rubric §VI checkpoint pattern | `load_checkpoint()` in [`src/models/neural.py`](src/models/neural.py) reconstructs `MLPInferenceWrapper` from `state_dict + config + scaler + feature_names`. Dashboard uses it directly. |
 
 ### Presentation & recording (10 pts)
