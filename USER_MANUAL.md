@@ -1,7 +1,7 @@
 # User Manual
 
-**AI-Driven SEO Ranking Predictor & Recommendation System**
-NETS 1500 (HW5) + CIS 2450 final project — Rahil Patel & Ayush Tripathi
+**SEO Ranking Predictor & Recommendation System**
+CIS 2450 final project — Rahil Patel & Ayush Tripathi
 
 This manual walks through installing, running the data pipeline, training the models, and using
 every feature of the Streamlit dashboard. Screenshots correspond to a clean clone with the full

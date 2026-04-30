@@ -6,7 +6,7 @@
 
 This README documents that pivot for graders and reviewers. The narrowed scope is reflected in `data/raw/` (one subdirectory per domain) and the joined feature matrix in `data/processed/features.csv`.
 
-## Sources (two distinct, per CIS 2450 §2 + NETS 1500 IR/Graph rubric)
+## Sources (two distinct, per CIS 2450 §2)
 
 **Source 1 — Developer documentation HTML.** Crawled with `src/scraping/doc_scraper.py` (async, robots.txt-aware, BFS within a single domain at a configurable per-domain rate limit). Each page is saved to `data/raw/<domain>/<sha1>.html` with a `<sha1>.json` sidecar containing URL, fetch timestamp, status, page title, and outbound links (the latter feeds the link graph in Phase 1 step 7).
 

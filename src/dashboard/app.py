@@ -627,8 +627,7 @@ def tab_about(state: dict[str, Any]) -> None:
     st.markdown("### About this project")
     st.markdown(
         """
-**SEO Ranking Predictor** — joint final project for **CIS 2450: Big Data Analytics** and
-**NETS 1500: Networked Life**.
+**SEO Ranking Predictor** — final project for **CIS 2450: Big Data Analytics**.
 
 The system predicts whether a developer-documentation page will appear in Google's top-10
 SERP results for the topic query derived from its `<title>`, then explains every prediction
@@ -661,12 +660,15 @@ with a SHAP-driven what-if simulator and a concrete, rule-grounded recommendatio
         """
     )
 
-    st.markdown("#### Course-topic coverage (NETS 1500)")
+    st.markdown("#### Course-topic coverage")
     st.markdown(
         """
-- **Information Networks (World Wide Web)** — page-to-page link graph, SERP ranking prediction.
-- **Information Retrieval** — TF-IDF over scraped page text, keyword density, title-keyword match.
-- **Graph & Graph Algorithms** — PageRank, HITS hub/authority, clustering coefficient, in/out-degree.
+- **Supervised learning** — Logistic Regression, Random Forest, XGBoost, MLP.
+- **Graphs** — link graph between scraped pages with PageRank, HITS hub/authority, clustering coefficient.
+- **Text representations** — corpus-level TF-IDF, keyword density, title-keyword match.
+- **Hypothesis testing** — chi-square / t-tests on top features by class (notebook 01).
+- **Hyperparameter tuning** — RandomizedSearchCV on shared `StratifiedKFold` splits.
+- **Joins** — page features joined to SERP labels on a `host + path` key.
         """
     )
 
@@ -690,7 +692,7 @@ def main() -> None:
 
     with st.sidebar:
         st.markdown("# SEO Ranking Predictor")
-        st.caption("CIS 2450 · NETS 1500 final project")
+        st.caption("CIS 2450 final project")
         tab = st.radio("View", NAV_TABS, index=0, label_visibility="collapsed")
         st.markdown("---")
         st.caption("**Authors**\n\nRahil Patel · Ayush Tripathi")
