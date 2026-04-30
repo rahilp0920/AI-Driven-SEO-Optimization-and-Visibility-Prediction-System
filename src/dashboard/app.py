@@ -118,20 +118,68 @@ def load_corpus_tfidf() -> tuple[Any, list[str]]:
     return vec, feature_cols
 
 
+GRAPH_FEATURE_COLS: tuple[str, ...] = (
+    "pagerank",
+    "hits_hub",
+    "hits_authority",
+    "in_degree",
+    "out_degree",
+    "clustering",
+)
+
+
+@st.cache_resource(show_spinner=False)
+def load_graph_medians() -> dict[str, float]:
+    """Return per-column medians of the corpus graph features.
+
+    Live URLs are not part of the training link graph, so their PageRank /
+    HITS / degree values are unknown. Zero-filling those columns biases the
+    models negatively (they learned that low graph scores correlate with
+    out-of-top-10). Falling back to the training-set **median** is a
+    much less biased default; it neither rewards nor penalises the live
+    page on graph signals it cannot supply.
+    """
+    if not FEATURES_CSV.exists():
+        return {}
+    df = pd.read_csv(FEATURES_CSV)
+    return {c: float(df[c].median()) for c in GRAPH_FEATURE_COLS if c in df.columns}
+
+
 @st.cache_resource(show_spinner="Computing reference distributions…")
 def load_reference_probs(_models: dict[str, Any], feature_cols: tuple[str, ...]) -> dict[str, np.ndarray]:
-    """Run each loaded model over the full training feature matrix once so the
-    dashboard can express live predictions as percentiles within the corpus
-    distribution. Returns {model_name: sorted_proba_array}.
+    """Run each loaded model over the **known top-10 (positive)** training
+    rows — with **graph features replaced by the corpus median** — so the
+    dashboard can express live predictions as percentiles within the
+    population of pages we know rank top-10, evaluated under the same
+    "no link-graph signal" conditions a live URL faces.
+    Returns ``{model_name: sorted_proba_array}``.
 
-    The leading-underscore on ``_models`` tells Streamlit to skip hashing it
-    (model objects aren't reliably hashable). ``feature_cols`` is a tuple so
-    the cache key is stable across reruns."""
+    Reference choice rationale: the corpus is class-balanced, so a full-
+    distribution percentile saturates around the 70s even for a textbook
+    top-10 page. Filtering to positives lets the score read as "how does
+    this page compare to known top-10 pages?". Median-filling graph
+    features in the reference (matching live featurization) keeps the
+    comparison apples-to-apples — without this, live pages are
+    systematically penalised because the reference still has its real
+    PageRank / HITS / degree signal.
+
+    The leading-underscore on ``_models`` tells Streamlit to skip hashing
+    it (model objects aren't reliably hashable). ``feature_cols`` is a
+    tuple so the cache key is stable across reruns.
+    """
     if not FEATURES_CSV.exists() or not _models:
         return {}
     df = pd.read_csv(FEATURES_CSV)
+    if "is_top_10" in df.columns:
+        df = df[df["is_top_10"] == 1]
+    if df.empty:
+        return {}
     cols = [c for c in feature_cols if c in df.columns]
-    X = df[cols].select_dtypes(include=[np.number]).fillna(0.0)
+    X = df[cols].select_dtypes(include=[np.number]).fillna(0.0).copy()
+    full_df = pd.read_csv(FEATURES_CSV)
+    for c in GRAPH_FEATURE_COLS:
+        if c in X.columns and c in full_df.columns:
+            X[c] = float(full_df[c].median())
     out: dict[str, np.ndarray] = {}
     for name, model in _models.items():
         try:
@@ -160,17 +208,32 @@ def scrape_one(url: str, timeout: float = 15.0) -> tuple[BeautifulSoup, str] | N
         return None
 
 
-def featurize(url: str, soup: BeautifulSoup, text: str, query: str, vec: Any, feature_cols: list[str]) -> pd.Series:
-    """Build a feature Series matching training column order. Graph features
-    are zero-filled (the live page is not in the corpus graph)."""
+def featurize(
+    url: str,
+    soup: BeautifulSoup,
+    text: str,
+    query: str,
+    vec: Any,
+    feature_cols: list[str],
+    graph_defaults: dict[str, float] | None = None,
+) -> pd.Series:
+    """Build a feature Series matching training column order.
+
+    Graph features are filled with ``graph_defaults`` (typically the corpus
+    median) when supplied; otherwise zero-fill. Live pages are never in the
+    corpus link graph, so we cannot compute their true PageRank / HITS /
+    degree values; using the training-set median rather than 0 prevents a
+    systematic negative bias the models would otherwise apply.
+    """
     row: dict[str, float] = {}
     row.update(extract_basic(text, query))
     row.update(extract_metadata(soup, query))
     row.update(extract_structural(soup, url))
     if vec is not None:
         row.update(transform_tfidf(text, vec))
-    for col in ["pagerank", "hits_hub", "hits_authority", "in_degree", "out_degree", "clustering"]:
-        row.setdefault(col, 0.0)
+    defaults = graph_defaults or {}
+    for col in GRAPH_FEATURE_COLS:
+        row.setdefault(col, float(defaults.get(col, 0.0)))
     series = pd.Series({c: float(row.get(c, 0.0)) for c in feature_cols})
     return series
 
@@ -331,14 +394,15 @@ def _render_seo_score(
         min(1.0, max(0.0, score / 100.0)),
         text=(
             f"{verdict} SEO signal — page ranks at the {score:.0f}th percentile "
-            f"of the trained corpus (ensemble)."
+            f"among known top-10 pages (ensemble)."
         ),
     )
 
     st.caption(
-        "Score = mean of per-model **percentile ranks** within the training-set probability "
-        "distribution. Use as a relative SEO quality signal across pages, not as a literal "
-        "top-10 probability."
+        "Score = mean of per-model **percentile ranks** of the page's predicted top-10 "
+        "probability **among known top-10 (positive) training pages**. Higher = looks more "
+        "like a top-10 page than the training positives. Live pages have unknown link-graph "
+        "features, so PageRank/HITS/degrees are filled with the corpus median."
     )
 
     with st.expander("Per-model breakdown", expanded=False):
@@ -397,6 +461,7 @@ def tab_predict(state: dict[str, Any]) -> None:
         )
 
     vec, feature_cols = state["vec"], state["feature_cols"]
+    graph_defaults = state.get("graph_medians") or {}
 
     if do_scrape:
         if not (url or "").strip():
@@ -409,7 +474,9 @@ def tab_predict(state: dict[str, Any]) -> None:
             else:
                 soup, text = res
                 q_use, q_derived, q_src = _resolve_topic_query(soup)
-                features = featurize(url.strip(), soup, text, q_use, vec, feature_cols)
+                features = featurize(
+                    url.strip(), soup, text, q_use, vec, feature_cols, graph_defaults=graph_defaults
+                )
                 state.update(
                     features=features,
                     url=url.strip(),
@@ -425,7 +492,7 @@ def tab_predict(state: dict[str, Any]) -> None:
         text = state["_scrape_text"]
         u = state.get("url") or ""
         q_use, q_derived, q_src = _resolve_topic_query(soup)
-        features = featurize(u, soup, text, q_use, vec, feature_cols)
+        features = featurize(u, soup, text, q_use, vec, feature_cols, graph_defaults=graph_defaults)
         state.update(
             features=features,
             query=q_use,
@@ -531,7 +598,10 @@ def tab_what_if(state: dict[str, Any]) -> None:
     if np.isfinite(new_score["score"]):
         st.progress(
             min(1.0, max(0.0, new_score["score"] / 100.0)),
-            text=f"Adjusted page ranks at the {new_score['score']:.0f}th percentile of the trained corpus.",
+            text=(
+                f"Adjusted page ranks at the {new_score['score']:.0f}th percentile "
+                f"among known top-10 pages."
+            ),
         )
 
     with st.expander("Per-model breakdown", expanded=False):
@@ -613,6 +683,7 @@ def main() -> None:
         st.stop()
 
     refs = load_reference_probs(models, tuple(feature_cols))
+    graph_medians = load_graph_medians()
 
     state = st.session_state.setdefault(
         "_state",
@@ -628,12 +699,14 @@ def main() -> None:
             "vec": vec,
             "feature_cols": feature_cols,
             "refs": refs,
+            "graph_medians": graph_medians,
         },
     )
     state["models"] = models
     state["vec"] = vec
     state["feature_cols"] = feature_cols
     state["refs"] = refs
+    state["graph_medians"] = graph_medians
     state.setdefault("derived_query", "")
     state.setdefault("query_source", "title")
     state.setdefault("_scrape_soup", None)

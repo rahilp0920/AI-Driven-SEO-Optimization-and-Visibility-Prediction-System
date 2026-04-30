@@ -159,13 +159,19 @@ over HTTP (no SERP API key needed for this step), extracts the same feature set 
 training (zero-fills graph features since the live page is not in the corpus graph), and
 runs every loaded model.
 
-**Headline output — SEO score (0–100).** The dashboard converts each model's `P(top-10)` for
-the live page into a **percentile rank** within that model's distribution over the training
-feature matrix, then averages those percentiles into a single SEO score. Higher = stronger
-SEO signals relative to the corpus, **not** a literal probability of ranking. A verdict
-bucket (Strong ≥ 70, Moderate 40–69, Weak < 40) and a **model agreement** indicator (high /
-mixed / low spread across models) are shown beside the score. Per-model probabilities and
-their percentiles are still available under "Per-model breakdown".
+**Headline output — SEO score (0–100).** The dashboard converts each model's `P(top-10)`
+for the live page into a **percentile rank within the population of known top-10 (positive)
+training pages**, then averages those percentiles into a single SEO score. Reading: at the
+50th percentile the page looks **as plausible as the median top-10 page**; at the 80th it
+looks **better than 80% of known top-10 pages**. A verdict bucket (Strong ≥ 70, Moderate
+40–69, Weak < 40) and a **model agreement** indicator (high / mixed / low spread across
+models) are shown beside the score. Per-model probabilities and their percentiles remain
+available under "Per-model breakdown".
+
+**Graph features for live URLs.** The live page is not in the training link graph, so its
+true PageRank / HITS / degree values are unknown. The dashboard fills them with the corpus
+**median** rather than 0 — zero-fill biases models negatively because they learned that low
+graph scores correlate with not ranking.
 
 **Topic query:** By default the query string matches the training pipeline (stripped from
 `<title>`). If that string is misleading (e.g. a docs root title that becomes only a version
