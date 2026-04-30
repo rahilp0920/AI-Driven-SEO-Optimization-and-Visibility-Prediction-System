@@ -1,9 +1,10 @@
 """Streamlit dashboard — SEO Ranking Predictor.
 
-Sidebar tabs (Predict / Recommendations / What-if / About). Every tab
-operates on a single "current page": either a freshly-scraped URL or the
-demo page (pre-baked, used as a fallback if the user hasn't scraped or the
-network call fails).
+Sidebar tabs (Predict / Recommendations / What-if / About). The current page is built from a live HTTP scrape of the URL the user enters
+(same feature pipeline as training, with graph features zero-filled for out-of-
+graph URLs). The topic query defaults to the same ``<title>``-derived rule as
+training; users may optionally override it for keyword features without
+re-scraping.
 
 Model loading order:
     1. MLP checkpoint at ``models/mlp_checkpoint.pt`` (rubric §VI pattern).
@@ -29,12 +30,13 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-import io
+import html
 import logging
 import urllib.parse
 from typing import Any
 
 import joblib
+import numpy as np
 import pandas as pd
 import streamlit as st
 from bs4 import BeautifulSoup
@@ -52,8 +54,6 @@ XGB_PATH = Path("models/xgboost.joblib")
 RF_PATH = Path("models/random_forest.joblib")
 LR_PATH = Path("models/baseline.joblib")
 FEATURES_CSV = Path("data/processed/features.csv")
-
-DEMO_URL = "https://docs.python.org/3/library/asyncio.html"
 
 
 # ─────────────────────────────────── model + data caching ───────────────────────────────────
@@ -109,12 +109,37 @@ def load_corpus_tfidf() -> tuple[Any, list[str]]:
             texts.append("")
             continue
         try:
-            html = html_path.read_text(encoding="utf-8", errors="replace")
-            texts.append(BeautifulSoup(html, "lxml").get_text(" ", strip=True))
+            html_text = html_path.read_text(encoding="utf-8", errors="replace")
+            texts.append(BeautifulSoup(html_text, "lxml").get_text(" ", strip=True))
         except OSError:
             texts.append("")
-    vec = fit_tfidf([t for t in texts if t], max_features=50)
+    corpus_texts = [t for t in texts if t]
+    vec = fit_tfidf(corpus_texts, max_features=50) if corpus_texts else None
     return vec, feature_cols
+
+
+@st.cache_resource(show_spinner="Computing reference distributions…")
+def load_reference_probs(_models: dict[str, Any], feature_cols: tuple[str, ...]) -> dict[str, np.ndarray]:
+    """Run each loaded model over the full training feature matrix once so the
+    dashboard can express live predictions as percentiles within the corpus
+    distribution. Returns {model_name: sorted_proba_array}.
+
+    The leading-underscore on ``_models`` tells Streamlit to skip hashing it
+    (model objects aren't reliably hashable). ``feature_cols`` is a tuple so
+    the cache key is stable across reruns."""
+    if not FEATURES_CSV.exists() or not _models:
+        return {}
+    df = pd.read_csv(FEATURES_CSV)
+    cols = [c for c in feature_cols if c in df.columns]
+    X = df[cols].select_dtypes(include=[np.number]).fillna(0.0)
+    out: dict[str, np.ndarray] = {}
+    for name, model in _models.items():
+        try:
+            p = np.asarray(model.predict_proba(X)[:, 1], dtype=float)
+            out[name] = np.sort(p)
+        except Exception as exc:  # noqa: BLE001
+            LOG.warning("reference predict_proba failed for %s: %s", name, exc)
+    return out
 
 
 # ─────────────────────────────────── live scraping ───────────────────────────────────
@@ -123,7 +148,7 @@ def load_corpus_tfidf() -> tuple[Any, list[str]]:
 def scrape_one(url: str, timeout: float = 15.0) -> tuple[BeautifulSoup, str] | None:
     """Fetch a single URL synchronously. Returns (soup, text) or None on failure."""
     import httpx
-    headers = {"User-Agent": "AIDrivenSEOResearchBot/1.0 (dashboard live demo)"}
+    headers = {"User-Agent": "AIDrivenSEOResearchBot/1.0 (dashboard scrape)"}
     try:
         with httpx.Client(headers=headers, follow_redirects=True, timeout=timeout) as client:
             resp = client.get(url)
@@ -156,27 +181,6 @@ def derive_query(soup: BeautifulSoup) -> str:
     return derive_query_from_title(title)
 
 
-# ─────────────────────────────────── demo fallback ───────────────────────────────────
-
-
-def demo_row(feature_cols: list[str]) -> tuple[pd.Series, str, str]:
-    """Pre-baked example so the dashboard always has something to show, even
-    offline. Numbers chosen to mimic a typical mid-quality dev-doc page."""
-    row = {c: 0.0 for c in feature_cols}
-    row.update({
-        "text_length": 8200, "word_count": 1450, "sentence_count": 92,
-        "flesch_reading_ease": 58.0, "keyword_density": 0.012,
-        "title_length": 38, "has_meta_description": 1.0, "meta_description_length": 142,
-        "keyword_in_title": 1.0,
-        "h1_count": 1, "h2_count": 6, "h3_count": 14,
-        "internal_link_count": 38, "external_link_count": 5,
-        "image_count": 3, "alt_text_coverage": 0.66,
-        "pagerank": 0.0021, "hits_hub": 0.013, "hits_authority": 0.018,
-        "in_degree": 12, "out_degree": 38, "clustering": 0.07,
-    })
-    return pd.Series({c: float(row.get(c, 0.0)) for c in feature_cols}), DEMO_URL, "asyncio"
-
-
 # ─────────────────────────────────── UI helpers ───────────────────────────────────
 
 
@@ -191,6 +195,68 @@ def predict_with_models(features: pd.Series, models: dict[str, Any]) -> dict[str
         except Exception as exc:  # noqa: BLE001
             LOG.warning("predict_proba failed for %s: %s", name, exc)
     return out
+
+
+def _percentile_of(value: float, sorted_ref: np.ndarray) -> float:
+    """0-100 percentile rank of ``value`` within a sorted reference vector."""
+    if sorted_ref.size == 0:
+        return float("nan")
+    rank = float(np.searchsorted(sorted_ref, value, side="right"))
+    return 100.0 * rank / float(sorted_ref.size)
+
+
+def compute_seo_score(
+    probs: dict[str, float],
+    refs: dict[str, np.ndarray],
+) -> dict[str, Any]:
+    """Combine per-model probabilities into a single 0-100 SEO score.
+
+    For each model we compute the percentile rank of the live ``P(top_10)``
+    inside that model's training-set probability distribution. The mean of
+    those percentiles is reported as the SEO score (relative ranking, not a
+    calibrated probability). ``agreement`` summarises spread across models.
+    """
+    pct: dict[str, float] = {}
+    for name, p in probs.items():
+        ref = refs.get(name)
+        if ref is None or ref.size == 0:
+            continue
+        pct[name] = _percentile_of(float(p), ref)
+
+    if not pct:
+        return {
+            "score": float("nan"),
+            "verdict": "n/a",
+            "agreement": "n/a",
+            "spread": float("nan"),
+            "per_model": {},
+        }
+
+    values = list(pct.values())
+    score = float(np.mean(values))
+    spread = float(max(values) - min(values))
+
+    if score >= 70.0:
+        verdict = "Strong"
+    elif score >= 40.0:
+        verdict = "Moderate"
+    else:
+        verdict = "Weak"
+
+    if spread <= 15.0:
+        agreement = "high"
+    elif spread <= 35.0:
+        agreement = "mixed"
+    else:
+        agreement = "low"
+
+    return {
+        "score": score,
+        "verdict": verdict,
+        "agreement": agreement,
+        "spread": spread,
+        "per_model": pct,
+    }
 
 
 def render_metric_card(label: str, value: str, klass: str = "") -> None:
@@ -222,34 +288,154 @@ def render_shap_row(name: str, value: float, vmax: float) -> None:
     )
 
 
+def _render_seo_score(
+    score_info: dict[str, Any],
+    probs: dict[str, float],
+    refs: dict[str, np.ndarray],
+) -> None:
+    """Headline SEO score (percentile-rank ensemble), agreement, and per-model
+    breakdown in a collapsible expander."""
+    score = score_info.get("score", float("nan"))
+    verdict = str(score_info.get("verdict", "n/a"))
+    agreement = str(score_info.get("agreement", "n/a"))
+    pct: dict[str, float] = score_info.get("per_model") or {}
+
+    if not refs or not pct or not np.isfinite(score):
+        st.warning(
+            "SEO score unavailable — reference distribution missing. "
+            "Showing per-model probabilities only."
+        )
+        cols = st.columns(len(probs)) if probs else []
+        for col, (name, p) in zip(cols, sorted(probs.items())):
+            with col:
+                klass = "good" if p >= 0.5 else ("warn" if p >= 0.3 else "bad")
+                render_metric_card(f"{name} P(top-10)", f"{p*100:.1f}%", klass=klass)
+        return
+
+    if verdict == "Strong":
+        klass = "good"
+    elif verdict == "Moderate":
+        klass = "warn"
+    else:
+        klass = "bad"
+
+    headline_cols = st.columns([2, 1, 1])
+    with headline_cols[0]:
+        render_metric_card("SEO score", f"{score:.0f} / 100", klass=klass)
+    with headline_cols[1]:
+        render_metric_card("Verdict", verdict, klass=klass)
+    with headline_cols[2]:
+        render_metric_card("Model agreement", agreement, klass="" if agreement == "high" else "warn")
+
+    st.progress(
+        min(1.0, max(0.0, score / 100.0)),
+        text=(
+            f"{verdict} SEO signal — page ranks at the {score:.0f}th percentile "
+            f"of the trained corpus (ensemble)."
+        ),
+    )
+
+    st.caption(
+        "Score = mean of per-model **percentile ranks** within the training-set probability "
+        "distribution. Use as a relative SEO quality signal across pages, not as a literal "
+        "top-10 probability."
+    )
+
+    with st.expander("Per-model breakdown", expanded=False):
+        cols = st.columns(len(probs))
+        for col, name in zip(cols, sorted(probs)):
+            p = probs[name]
+            pc = pct.get(name, float("nan"))
+            with col:
+                pclass = "good" if pc >= 70 else ("warn" if pc >= 40 else "bad")
+                render_metric_card(name, f"P={p*100:.1f}%", klass=pclass)
+                st.caption(f"percentile: {pc:.0f}")
+
+
 # ─────────────────────────────────── tabs ───────────────────────────────────
+
+
+def _manual_query_override() -> str:
+    """Reads the optional topic-query widget (Streamlit session key)."""
+    return (st.session_state.get("topic_query_override") or "").strip()
+
+
+def _resolve_topic_query(soup: BeautifulSoup) -> tuple[str, str, str]:
+    """Return ``(query_used_for_features, title_derived_query, 'manual'|'title')``."""
+    derived = derive_query(soup) or "(no title)"
+    manual = _manual_query_override()
+    if manual:
+        return manual, derived, "manual"
+    return derived, derived, "title"
 
 
 def tab_predict(state: dict[str, Any]) -> None:
     st.markdown("### Predict top-10 SERP probability")
-    url = st.text_input("Page URL", value=state.get("url", DEMO_URL))
-    col_a, col_b = st.columns([1, 1])
-    do_scrape = col_a.button("Scrape & predict", type="primary", use_container_width=True)
-    use_demo = col_b.button("Use demo page", use_container_width=True)
+    url = st.text_input("Page URL", value=state.get("url", ""), placeholder="https://docs.example.com/…")
+
+    st.caption(
+        "Training labels use one query per page, derived from **<title>** (stripped site suffixes). "
+        "If that string is a poor search topic (e.g. a version number only), set an override below."
+    )
+    st.text_input(
+        "Topic query override (optional)",
+        key="topic_query_override",
+        placeholder='e.g. Python 3 documentation — leave empty for title-derived (matches training)',
+        help="Used for keyword-in-title, keyword density, and related text features. "
+        "Does not re-fetch SERP; the model still predicts top-10 probability from features only.",
+    )
+
+    c1, c2 = st.columns(2)
+    with c1:
+        do_scrape = st.button("Scrape & predict", type="primary", use_container_width=True)
+    with c2:
+        do_repredict = st.button(
+            "Re-predict with query only",
+            use_container_width=True,
+            disabled=state.get("_scrape_soup") is None,
+            help="Uses the last successful scrape and the override box (or title-derived if empty).",
+        )
 
     vec, feature_cols = state["vec"], state["feature_cols"]
 
-    if use_demo or (state.get("features") is None and not do_scrape):
-        features, used_url, query = demo_row(feature_cols)
-        state.update(features=features, url=used_url, query=query, source="demo")
-
-    if do_scrape and url:
-        with st.spinner(f"Scraping {url} …"):
-            res = scrape_one(url)
-        if res is None:
-            st.warning("Live scrape failed — showing demo page instead.")
-            features, used_url, query = demo_row(feature_cols)
-            state.update(features=features, url=used_url, query=query, source="demo (fallback)")
+    if do_scrape:
+        if not (url or "").strip():
+            st.warning("Enter a page URL first.")
         else:
-            soup, text = res
-            query = derive_query(soup) or "(no title)"
-            features = featurize(url, soup, text, query, vec, feature_cols)
-            state.update(features=features, url=url, query=query, source="live")
+            with st.spinner(f"Scraping {url} …"):
+                res = scrape_one(url.strip())
+            if res is None:
+                st.error("Could not fetch that URL (network error, timeout, or HTTP error). Try another URL.")
+            else:
+                soup, text = res
+                q_use, q_derived, q_src = _resolve_topic_query(soup)
+                features = featurize(url.strip(), soup, text, q_use, vec, feature_cols)
+                state.update(
+                    features=features,
+                    url=url.strip(),
+                    query=q_use,
+                    derived_query=q_derived,
+                    query_source=q_src,
+                    _scrape_soup=soup,
+                    _scrape_text=text,
+                )
+
+    if do_repredict and state.get("_scrape_soup") is not None:
+        soup = state["_scrape_soup"]
+        text = state["_scrape_text"]
+        u = state.get("url") or ""
+        q_use, q_derived, q_src = _resolve_topic_query(soup)
+        features = featurize(u, soup, text, q_use, vec, feature_cols)
+        state.update(
+            features=features,
+            query=q_use,
+            derived_query=q_derived,
+            query_source=q_src,
+        )
+
+    if state.get("features") is None:
+        st.info("Enter a documentation page URL and click **Scrape & predict** to run the models.")
+        return
 
     features = state["features"]
     probs = predict_with_models(features, state["models"])
@@ -257,17 +443,25 @@ def tab_predict(state: dict[str, Any]) -> None:
         st.error("No trained models loaded. Run the model sweep first.")
         return
 
-    st.markdown(f'<div class="banner"><h1>{state["url"]}</h1>'
-                f'<div class="sub">Topic query: <strong>{state["query"]}</strong> · source: {state["source"]}</div></div>',
-                unsafe_allow_html=True)
+    q_esc = html.escape(str(state.get("query", "")))
+    u_esc = html.escape(str(state.get("url", "")))
+    sub = f"Topic query: <strong>{q_esc}</strong>"
+    if state.get("query_source") == "manual" and state.get("derived_query"):
+        d_esc = html.escape(str(state["derived_query"]))
+        if str(state.get("query")) != str(state.get("derived_query")):
+            sub += f' <span style="opacity:0.85;font-size:0.92em">(title-derived: {d_esc})</span>'
+        sub += ' <span style="opacity:0.85;font-size:0.92em">· manual override</span>'
+    else:
+        sub += ' <span style="opacity:0.85;font-size:0.92em">· from page title (training default)</span>'
 
-    cols = st.columns(len(probs))
-    for col, (name, p) in zip(cols, sorted(probs.items())):
-        with col:
-            verdict = "good" if p >= 0.5 else ("warn" if p >= 0.3 else "bad")
-            render_metric_card(f"{name} P(top-10)", f"{p*100:.1f}%", klass=verdict)
+    st.markdown(
+        f'<div class="banner"><h1>{u_esc}</h1><div class="sub">{sub}</div></div>',
+        unsafe_allow_html=True,
+    )
 
-    st.progress(min(1.0, max(probs.values())), text=f"Top model says: {max(probs.values())*100:.1f}% chance of top-10.")
+    refs: dict[str, np.ndarray] = state.get("refs") or {}
+    score_info = compute_seo_score(probs, refs)
+    _render_seo_score(score_info, probs, refs)
 
 
 def tab_recommendations(state: dict[str, Any]) -> None:
@@ -307,16 +501,50 @@ def tab_what_if(state: dict[str, Any]) -> None:
     base_p = predict_with_models(base, state["models"])
     new_p = predict_with_models(modified, state["models"])
 
-    cols2 = st.columns(len(base_p))
-    for col, name in zip(cols2, sorted(base_p)):
-        delta = new_p[name] - base_p[name]
-        with col:
-            render_metric_card(
-                f"{name}",
-                f"{new_p[name]*100:.1f}%",
-                klass="good" if delta > 0.005 else ("bad" if delta < -0.005 else ""),
-            )
-            st.caption(f"Δ {delta*100:+.1f} pts vs original")
+    refs: dict[str, np.ndarray] = state.get("refs") or {}
+    base_score = compute_seo_score(base_p, refs)
+    new_score = compute_seo_score(new_p, refs)
+
+    headline_cols = st.columns([2, 1, 1])
+    delta_score = float("nan")
+    if np.isfinite(new_score["score"]) and np.isfinite(base_score["score"]):
+        delta_score = float(new_score["score"] - base_score["score"])
+
+    if new_score["verdict"] == "Strong":
+        klass = "good"
+    elif new_score["verdict"] == "Moderate":
+        klass = "warn"
+    else:
+        klass = "bad"
+
+    with headline_cols[0]:
+        render_metric_card("New SEO score", f"{new_score['score']:.0f} / 100", klass=klass)
+    with headline_cols[1]:
+        render_metric_card("Verdict", str(new_score["verdict"]), klass=klass)
+    with headline_cols[2]:
+        if np.isfinite(delta_score):
+            d_klass = "good" if delta_score > 0.5 else ("bad" if delta_score < -0.5 else "")
+            render_metric_card("Δ vs original", f"{delta_score:+.1f}", klass=d_klass)
+        else:
+            render_metric_card("Δ vs original", "n/a")
+
+    if np.isfinite(new_score["score"]):
+        st.progress(
+            min(1.0, max(0.0, new_score["score"] / 100.0)),
+            text=f"Adjusted page ranks at the {new_score['score']:.0f}th percentile of the trained corpus.",
+        )
+
+    with st.expander("Per-model breakdown", expanded=False):
+        cols2 = st.columns(len(base_p))
+        for col, name in zip(cols2, sorted(base_p)):
+            delta_p = new_p[name] - base_p[name]
+            with col:
+                render_metric_card(
+                    f"{name}",
+                    f"P={new_p[name]*100:.1f}%",
+                    klass="good" if delta_p > 0.005 else ("bad" if delta_p < -0.005 else ""),
+                )
+                st.caption(f"Δ {delta_p*100:+.1f} pts vs original")
 
 
 def tab_about(state: dict[str, Any]) -> None:
@@ -372,25 +600,44 @@ def main() -> None:
         tab = st.radio("View", ["Predict", "Recommendations", "What-if", "About"], index=0)
 
     models = load_models()
+    if not FEATURES_CSV.exists():
+        st.error(
+            f"Missing `{FEATURES_CSV}` — run `make features` (after scrape + SERP) so the "
+            "dashboard can align TF-IDF and column order with training."
+        )
+        st.stop()
+
     vec, feature_cols = load_corpus_tfidf()
     if not feature_cols:
-        # No corpus yet — synthesise feature_cols from demo defaults so the
-        # dashboard still boots in a clean clone before anyone has scraped.
-        feature_cols = list(demo_row([])[0].index) if False else [
-            "text_length", "word_count", "sentence_count", "flesch_reading_ease", "keyword_density",
-            "title_length", "has_meta_description", "meta_description_length", "keyword_in_title",
-            "h1_count", "h2_count", "h3_count", "internal_link_count", "external_link_count",
-            "image_count", "alt_text_coverage",
-            "pagerank", "hits_hub", "hits_authority", "in_degree", "out_degree", "clustering",
-        ]
+        st.error(f"`{FEATURES_CSV}` has no usable feature columns. Re-run `make features`.")
+        st.stop()
+
+    refs = load_reference_probs(models, tuple(feature_cols))
 
     state = st.session_state.setdefault(
         "_state",
-        {"features": None, "url": "", "query": "", "source": "", "models": models, "vec": vec, "feature_cols": feature_cols},
+        {
+            "features": None,
+            "url": "",
+            "query": "",
+            "derived_query": "",
+            "query_source": "title",
+            "_scrape_soup": None,
+            "_scrape_text": None,
+            "models": models,
+            "vec": vec,
+            "feature_cols": feature_cols,
+            "refs": refs,
+        },
     )
     state["models"] = models
     state["vec"] = vec
     state["feature_cols"] = feature_cols
+    state["refs"] = refs
+    state.setdefault("derived_query", "")
+    state.setdefault("query_source", "title")
+    state.setdefault("_scrape_soup", None)
+    state.setdefault("_scrape_text", None)
 
     if tab == "Predict":
         tab_predict(state)
