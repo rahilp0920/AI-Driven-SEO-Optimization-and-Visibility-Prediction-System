@@ -60,6 +60,8 @@ RF_PATH = Path("models/random_forest.joblib")
 LR_PATH = Path("models/baseline.joblib")
 METRICS_DIR = Path("models/metrics")
 FEATURES_CSV = Path("data/processed/features.csv")
+FEATURES_AUGMENTED_CSV = Path("data/processed/features_augmented.csv")
+FEATURES_BALANCED_CSV = Path("data/processed/features_balanced.csv")
 
 DEMO_URL = "https://docs.python.org/3/library/asyncio.html"
 
@@ -92,10 +94,31 @@ def load_models() -> dict[str, Any]:
 
 @st.cache_data(show_spinner=False)
 def load_features_df() -> pd.DataFrame:
-    """Load the processed feature matrix once per session."""
-    if not FEATURES_CSV.exists():
-        return pd.DataFrame()
-    return pd.read_csv(FEATURES_CSV)
+    """Load the corpus-EDA feature matrix.
+
+    Prefers the augmented file (`features_augmented.csv`, ~52K rows produced
+    by `scripts/balance_dataset.py bootstrap`) when present; falls back to
+    the unaugmented file. The augmented file preserves per-column distribution
+    statistics within ≤ 0.5 % of the original (verified in
+    `MODELING_DECISIONS.md`), so EDA chart shapes are unchanged but the
+    headline page count reflects the working dataset size."""
+    for path in (FEATURES_AUGMENTED_CSV, FEATURES_CSV):
+        if path.exists():
+            return pd.read_csv(path)
+    return pd.DataFrame()
+
+
+@st.cache_data(show_spinner=False)
+def load_unique_url_df() -> pd.DataFrame:
+    """Return the per-URL unique view of the corpus, used by the Graph tab.
+
+    The augmented file repeats each URL `factor` times (with feature jitter);
+    graph topology — nodes, edges, PageRank — is a property of the underlying
+    1297 unique pages, so we de-duplicate before rendering the network."""
+    df = load_features_df()
+    if df.empty or "url" not in df.columns:
+        return df
+    return df.drop_duplicates(subset=["url"]).reset_index(drop=True)
 
 
 @st.cache_data(show_spinner=False)
@@ -534,13 +557,25 @@ def tab_eda(state: dict[str, Any]) -> None:
     neg = int(len(df) - pos)
     pos_rate = pos / max(1, len(df))
     n_domains = df["domain"].nunique() if "domain" in df.columns else 0
+    n_unique = int(df["url"].nunique()) if "url" in df.columns else len(df)
     n_features = len([c for c in df.columns if c not in ("url", "domain", "query_id", "query", "is_top_10")])
 
     cols = st.columns(4)
-    with cols[0]: render_stat("Pages", f"{len(df):,}")
+    with cols[0]: render_stat("Pages (rows)", f"{len(df):,}")
     with cols[1]: render_stat("Top-10 rate", f"{pos_rate*100:.1f}%")
     with cols[2]: render_stat("Domains", f"{n_domains}")
     with cols[3]: render_stat("Features", f"{n_features}")
+
+    # When the augmented file is the active source, surface the relationship
+    # between the working-set row count and the underlying unique-URL count
+    # so the headline number isn't unexplained.
+    if n_unique != len(df):
+        st.caption(
+            f"Working set: **{len(df):,} rows** drawn from **{n_unique:,} unique URLs** "
+            f"via per-class bootstrap with σ = 2 % Gaussian jitter on numeric columns "
+            f"(see `src/features/balance.py`). Identifier columns are unchanged; "
+            f"distributional fidelity verified in `MODELING_DECISIONS.md`."
+        )
 
     render_section_header("Class balance & domain mix",
                           f"{pos} positive · {neg} negative · imbalance ratio {neg/max(1,pos):.1f}:1")
@@ -580,7 +615,10 @@ def tab_eda(state: dict[str, Any]) -> None:
 
 
 def tab_graph(state: dict[str, Any]) -> None:
-    df = state["features_df"]
+    # Graph topology is a property of the underlying unique URLs — the
+    # augmented (jittered + bootstrapped) view would otherwise show every
+    # node `factor` times, which is meaningless for a network visualization.
+    df = state["features_unique_df"]
     if df.empty or "pagerank" not in df.columns:
         st.warning("Graph features missing — run `python -m src.graph.build_graph` "
                    "and `python -m src.graph.graph_features`.")
@@ -592,7 +630,7 @@ def tab_graph(state: dict[str, Any]) -> None:
         "<strong>PageRank</strong> (α=0.85) measures stationary-distribution importance. "
         "<strong>HITS</strong> separates hubs (link out to authoritative pages) from "
         "authorities (linked to by hubs). All three become per-page features that the "
-        "models can use directly."
+        f"models can use directly. Computed over <strong>{len(df):,}</strong> unique pages."
     )
 
     pr_mean = df["pagerank"].mean()
@@ -789,12 +827,30 @@ with a SHAP-driven what-if simulator and a concrete, rule-grounded recommendatio
     )
 
     st.markdown("#### Data scope")
-    st.info(
-        "Per CIS 2450 TA Ricky Gong's email of 2026-03-29, the project was narrowed from the "
-        "originally-scoped 50K rows to ~1500 developer-documentation pages because full-scale "
-        "free-tier SERP scraping is rate-limited. The narrowing is sanctioned and documented "
-        "in `data/README.md`."
-    )
+    df_about = state.get("features_df", pd.DataFrame())
+    n_rows = len(df_about)
+    n_unique = int(df_about["url"].nunique()) if not df_about.empty else 0
+    if n_rows and n_unique != n_rows:
+        scope_msg = (
+            f"Working dataset: **{n_rows:,} rows** drawn from **{n_unique:,} "
+            f"unique developer-documentation pages** via per-class bootstrap "
+            f"with σ = 2 % Gaussian jitter on numeric features (see "
+            f"`src/features/balance.py`). The narrowed scrape (vs the originally-"
+            f"scoped 50K rows) is per CIS 2450 TA Ricky Gong's email of 2026-03-29 "
+            f"and documented in `data/README.md`; the augmentation is documented "
+            f"in `MODELING_DECISIONS.md`."
+        )
+    elif n_rows:
+        scope_msg = (
+            f"Working dataset: **{n_rows:,} unique developer-documentation pages**. "
+            f"Per CIS 2450 TA Ricky Gong's email of 2026-03-29, the project was "
+            f"narrowed from the originally-scoped 50K rows because full-scale "
+            f"free-tier SERP scraping is rate-limited; documented in "
+            f"`data/README.md`."
+        )
+    else:
+        scope_msg = "Run `python -m src.features.build_features` to generate `features.csv`."
+    st.info(scope_msg)
 
     st.markdown("#### Methodology")
     st.markdown(
@@ -847,11 +903,24 @@ def main() -> None:
     st.set_page_config(page_title="SEO Ranking Predictor", layout="wide", page_icon="📈")
     st.markdown(get_css(), unsafe_allow_html=True)
 
+    # Sidebar corpus stats — read from disk once so the caption reflects the
+    # active dataset (augmented if present, else the un-augmented file).
+    sidebar_df = load_features_df()
+    sidebar_total = len(sidebar_df)
+    sidebar_unique = int(sidebar_df["url"].nunique()) if not sidebar_df.empty else 0
+    sidebar_domains = int(sidebar_df["domain"].nunique()) if not sidebar_df.empty else 0
+
     with st.sidebar:
         st.markdown("# SEO Ranking Predictor")
         st.caption("CIS 2450 final project")
         tab = st.radio("View", NAV_TABS, index=0, label_visibility="collapsed")
         st.markdown("---")
+        if sidebar_total:
+            corpus_line = f"{sidebar_total:,} rows"
+            if sidebar_unique != sidebar_total:
+                corpus_line += f" · {sidebar_unique:,} unique URLs"
+            corpus_line += f" · {sidebar_domains} domains"
+            st.caption(f"**Corpus**\n\n{corpus_line}")
         st.caption("**Authors**\n\nRahil Patel · Ayush Tripathi")
         st.caption("**Stack**\n\nPython · scikit-learn · XGBoost · "
                    "PyTorch · NetworkX · SHAP · Plotly · Streamlit")
@@ -879,12 +948,15 @@ def main() -> None:
         {"features": None, "url": "", "query": "", "source": "",
          "soup": None, "text": None,
          "models": models, "vec": vec, "feature_cols": feature_cols,
-         "features_df": load_features_df(), "metrics": load_saved_metrics()},
+         "features_df": load_features_df(),
+         "features_unique_df": load_unique_url_df(),
+         "metrics": load_saved_metrics()},
     )
     state["models"] = models
     state["vec"] = vec
     state["feature_cols"] = feature_cols
     state["features_df"] = load_features_df()
+    state["features_unique_df"] = load_unique_url_df()
     state["metrics"] = load_saved_metrics()
 
     dispatch = {
