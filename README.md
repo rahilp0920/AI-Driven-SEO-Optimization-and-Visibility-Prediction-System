@@ -190,9 +190,9 @@ Three concepts implemented in depth:
 |------|-------|
 | Interactive (not static) | Live URL → scrape → predict + sliders + tabs. |
 | Showcases full project | Predict / EDA / Graph / Models / Recommendations / What-if / About — covers every layer of the pipeline. |
-| Custom polish | Hand-styled CSS in [`src/dashboard/styles.py`](src/dashboard/styles.py): gradient sidebar, card-framed Plotly charts, pill-style nav, refined metric cards. |
+| Custom polish | Hand-styled CSS in [`src/dashboard/styles.py`](src/dashboard/styles.py): solid-color dark sidebar, card-framed Plotly charts, pill-style nav, refined metric cards. |
 | EDA + modeling visible side-by-side | EDA tab + Models tab both render Plotly charts inline; URL hierarchy network shows the link-graph layer. |
-| Demo data fallback | `demo_row()` in `app.py` — used automatically if a live scrape fails. |
+| Live-only Predict tab | No precomputed demo — every score on `Predict` comes from a fresh scrape + featurization for a user-supplied URL; failures surface as explicit errors instead of falling back to fake data. |
 
 ### Presentation (Sec. 11)
 

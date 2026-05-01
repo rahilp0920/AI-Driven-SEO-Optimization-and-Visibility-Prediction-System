@@ -28,6 +28,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
+import html
 import json
 import logging
 import urllib.parse
@@ -62,8 +63,6 @@ METRICS_DIR = Path("models/metrics")
 FEATURES_CSV = Path("data/processed/features.csv")
 FEATURES_AUGMENTED_CSV = Path("data/processed/features_augmented.csv")
 FEATURES_BALANCED_CSV = Path("data/processed/features_balanced.csv")
-
-DEMO_URL = "https://docs.python.org/3/library/asyncio.html"
 
 NAV_TABS = ["Predict", "EDA", "Graph", "Models", "Recommendations", "What-if", "About"]
 
@@ -138,29 +137,43 @@ def load_saved_metrics() -> dict[str, dict[str, Any]]:
 
 @st.cache_resource(show_spinner=False)
 def load_corpus_tfidf() -> tuple[Any, list[str]]:
-    """Refit TF-IDF on the corpus (fast for ~100 rows) so we can transform
-    a freshly-scraped page into the same feature space the models trained
-    on. Returns (vectorizer, feature_column_order). When raw HTML is missing
-    we fall back to an empty corpus and the live-scrape path skips TF-IDF."""
-    df = load_features_df()
+    """Refit TF-IDF on the corpus so we can transform a freshly-scraped page
+    into the same feature space the models trained on. Returns
+    ``(vectorizer, feature_column_order)``. Returns ``(None, [])`` when raw
+    HTML is missing — the live-scrape path will then skip TF-IDF.
+
+    Performance: the augmented features file repeats each URL ~40×, so we
+    iterate the **deduplicated** view (``load_unique_url_df``) and pre-build
+    a single ``url → html_path`` index from the JSON sidecars. Without this,
+    cold-start time on the augmented corpus was on the order of
+    ``len(rows) × len(json_files)`` substring scans (millions of file
+    reads); the index pass is ``O(json_files)`` once, and lookups are O(1).
+    """
+    df = load_unique_url_df()
     if df.empty:
         return None, []
-    feature_cols = [c for c in df.columns if c not in ("url", "domain", "query_id", "query", "is_top_10")]
+    feature_cols = [c for c in df.columns
+                    if c not in ("url", "domain", "query_id", "query", "is_top_10")]
+
     raw_dir = Path("data/raw")
+    url_to_html: dict[str, Path] = {}
+    if raw_dir.exists():
+        for json_path in raw_dir.glob("*/*.json"):
+            try:
+                meta = json.loads(json_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            url = meta.get("url")
+            if not url:
+                continue
+            html_path = json_path.with_suffix(".html")
+            if html_path.exists():
+                url_to_html[url] = html_path
+
     texts: list[str] = []
     for url in df["url"].astype(str).tolist():
-        host = urllib.parse.urlparse(url).netloc
-        domain_dir = raw_dir / host
-        if not domain_dir.exists():
-            texts.append("")
-            continue
-        match = next((p for p in domain_dir.glob("*.json")
-                      if url in p.read_text(encoding="utf-8", errors="ignore")), None)
-        if match is None:
-            texts.append("")
-            continue
-        html_path = match.with_suffix(".html")
-        if not html_path.exists():
+        html_path = url_to_html.get(url)
+        if html_path is None:
             texts.append("")
             continue
         try:
@@ -168,6 +181,7 @@ def load_corpus_tfidf() -> tuple[Any, list[str]]:
             texts.append(BeautifulSoup(html_text, "lxml").get_text(" ", strip=True))
         except OSError:
             texts.append("")
+
     non_empty = [t for t in texts if t]
     vec = fit_tfidf(non_empty, max_features=50) if non_empty else None
     return vec, feature_cols
@@ -264,17 +278,25 @@ def scrape_one(url: str, timeout: float = 15.0) -> tuple[BeautifulSoup, str] | N
 
 
 def featurize(url: str, soup: BeautifulSoup, text: str, query: str,
-              vec: Any, feature_cols: list[str]) -> pd.Series:
-    """Build a feature Series matching training column order. Graph features
-    are zero-filled (the live page is not in the corpus graph)."""
+              vec: Any, feature_cols: list[str],
+              graph_defaults: dict[str, float] | None = None) -> pd.Series:
+    """Build a feature Series matching training column order.
+
+    Graph features are filled from ``graph_defaults`` (typically the corpus
+    median; see ``load_graph_medians``) when supplied; otherwise zero-fill.
+    Live URLs are never in the corpus link graph, so we cannot compute their
+    real PageRank / HITS / degree values; using the training median rather
+    than 0 prevents a systematic negative bias the models otherwise apply
+    (they learned that low graph scores correlate with not ranking)."""
     row: dict[str, float] = {}
     row.update(extract_basic(text, query))
     row.update(extract_metadata(soup, query))
     row.update(extract_structural(soup, url))
     if vec is not None:
         row.update(transform_tfidf(text, vec))
-    for col in ["pagerank", "hits_hub", "hits_authority", "in_degree", "out_degree", "clustering"]:
-        row.setdefault(col, 0.0)
+    defaults = graph_defaults or {}
+    for col in GRAPH_FEATURE_COLS:
+        row.setdefault(col, float(defaults.get(col, 0.0)))
     return pd.Series({c: float(row.get(c, 0.0)) for c in feature_cols})
 
 
@@ -282,24 +304,6 @@ def derive_query(soup: BeautifulSoup) -> str:
     title = soup.title.string.strip() if (soup.title and soup.title.string) else ""
     from src.scraping.serp_client import derive_query_from_title
     return derive_query_from_title(title)
-
-
-def demo_row(feature_cols: list[str]) -> tuple[pd.Series, str, str]:
-    """Pre-baked example so the dashboard always has something to show, even
-    offline. Numbers chosen to mimic a typical mid-quality dev-doc page."""
-    row = {c: 0.0 for c in feature_cols}
-    row.update({
-        "text_length": 8200, "word_count": 1450, "sentence_count": 92,
-        "flesch_reading_ease": 58.0, "keyword_density": 0.012,
-        "title_length": 38, "has_meta_description": 1.0, "meta_description_length": 142,
-        "keyword_in_title": 1.0,
-        "h1_count": 1, "h2_count": 6, "h3_count": 14,
-        "internal_link_count": 38, "external_link_count": 5,
-        "image_count": 3, "alt_text_coverage": 0.66,
-        "pagerank": 0.0021, "hits_hub": 0.013, "hits_authority": 0.018,
-        "in_degree": 12, "out_degree": 38, "clustering": 0.07,
-    })
-    return pd.Series({c: float(row.get(c, 0.0)) for c in feature_cols}), DEMO_URL, "asyncio"
 
 
 def predict_with_models(features: pd.Series, models: dict[str, Any]) -> dict[str, float]:
@@ -459,7 +463,8 @@ def tab_predict(state: dict[str, Any]) -> None:
         "match the search intent you want to evaluate against."
     )
 
-    url = st.text_input("Page URL", value=state.get("url", DEMO_URL))
+    url = st.text_input("Page URL", value=state.get("url", ""),
+                        placeholder="https://docs.python.org/3/library/asyncio.html")
     query_input = st.text_input(
         "Topic query (override)",
         value=state.get("query", ""),
@@ -467,32 +472,28 @@ def tab_predict(state: dict[str, Any]) -> None:
              "against a different search intent.",
     )
 
-    col_a, col_b, col_c = st.columns(3)
-    do_scrape = col_a.button("Scrape & predict", type="primary", width="stretch")
-    do_requery = col_b.button("Apply query", width="stretch",
+    col_a, col_b = st.columns(2)
+    do_scrape = col_a.button("Scrape & predict", type="primary", use_container_width=True)
+    do_requery = col_b.button("Apply query", use_container_width=True,
                               help="Recompute features with the query above (no rescrape).")
-    use_demo = col_c.button("Use demo page", width="stretch")
 
     vec, feature_cols = state["vec"], state["feature_cols"]
     graph_defaults = state.get("graph_medians") or {}
-
-    if use_demo or (state.get("features") is None and not do_scrape and not do_requery):
-        features, used_url, query = demo_row(feature_cols)
-        state.update(features=features, url=used_url, query=query, source="demo",
-                     soup=None, text=None)
 
     if do_scrape and url:
         with st.spinner(f"Scraping {url} …"):
             res = scrape_one(url)
         if res is None:
-            st.warning("Live scrape failed — showing demo page instead.")
-            features, used_url, query = demo_row(feature_cols)
-            state.update(features=features, url=used_url, query=query, source="demo (fallback)",
-                         soup=None, text=None)
+            st.error(
+                f"Live scrape failed for `{url}` — the page returned no parseable HTML "
+                "(network error, paywall, JS-only render, or robots.txt block). "
+                "Try a different URL."
+            )
         else:
             soup, text = res
             query = query_input.strip() or derive_query(soup) or "(no title)"
-            features = featurize(url, soup, text, query, vec, feature_cols)
+            features = featurize(url, soup, text, query, vec, feature_cols,
+                                 graph_defaults=graph_defaults)
             state.update(features=features, url=url, query=query, source="live",
                          soup=soup, text=text)
 
@@ -500,11 +501,17 @@ def tab_predict(state: dict[str, Any]) -> None:
         new_query = query_input.strip()
         soup, text = state.get("soup"), state.get("text")
         if soup is not None and text is not None:
-            features = featurize(state["url"], soup, text, new_query, vec, feature_cols)
+            features = featurize(state["url"], soup, text, new_query, vec, feature_cols,
+                                 graph_defaults=graph_defaults)
             state.update(features=features, query=new_query, source="live (custom query)")
-        else:
-            state.update(query=new_query,
-                         source=f"{state.get('source', 'demo')} + custom query")
+
+    if state.get("features") is None:
+        st.info(
+            "Paste a developer-doc URL above and click **Scrape & predict** to "
+            "evaluate it. Nothing is precomputed — every score on this tab comes "
+            "from a live fetch and on-the-fly featurization."
+        )
+        return
 
     features = state["features"]
     probs = predict_with_models(features, state["models"])
@@ -512,9 +519,9 @@ def tab_predict(state: dict[str, Any]) -> None:
         st.error("No trained models loaded. Run the model sweep first.")
         return
 
-    st.markdown(f'<div class="banner"><h1>{state["url"]}</h1>'
-                f'<div class="sub">Topic query: <strong>{state["query"]}</strong> · '
-                f'source: {state["source"]}</div></div>',
+    st.markdown(f'<div class="banner"><h1>{html.escape(str(state["url"]))}</h1>'
+                f'<div class="sub">Topic query: <strong>{html.escape(str(state["query"]))}</strong> · '
+                f'source: {html.escape(str(state["source"]))}</div></div>',
                 unsafe_allow_html=True)
 
     cols = st.columns(len(probs))
@@ -527,12 +534,20 @@ def tab_predict(state: dict[str, Any]) -> None:
     st.progress(min(1.0, max(probs.values())),
                 text=f"Top model says: {max(probs.values())*100:.1f}% chance of top-10.")
 
-    explainer_model = state["models"].get("xgboost") or state["models"].get("random_forest")
+    explainer_name = "xgboost" if "xgboost" in state["models"] else (
+        "random_forest" if "random_forest" in state["models"] else None)
+    explainer_model = state["models"].get(explainer_name) if explainer_name else None
     if explainer_model is not None:
         impacts = shap_per_prediction(explainer_model, features, top_k=8)
         if impacts:
+            pretty = {"xgboost": "XGBoost", "random_forest": "Random Forest"}[explainer_name]
             render_section_header("Per-prediction SHAP attribution",
-                                  "What pushed this score up vs. down")
+                                  f"{pretty} · what pushed this score up vs. down")
+            st.caption(
+                f"Attributions computed via `shap.TreeExplainer` on the **{pretty}** "
+                "model. The SEO score above blends all four models — SHAP only "
+                "explains this one."
+            )
             vmax = max(abs(v) for _, v in impacts) or 1.0
             for name, val in impacts:
                 render_shap_row(name, val, vmax)
@@ -580,12 +595,12 @@ def tab_eda(state: dict[str, Any]) -> None:
     render_section_header("Class balance & domain mix",
                           f"{pos} positive · {neg} negative · imbalance ratio {neg/max(1,pos):.1f}:1")
     c1, c2 = st.columns([1, 1.3])
-    with c1: st.plotly_chart(ch.class_balance_bar(df), width="stretch")
-    with c2: st.plotly_chart(ch.domain_breakdown_bar(df), width="stretch")
+    with c1: st.plotly_chart(ch.class_balance_bar(df), use_container_width=True)
+    with c2: st.plotly_chart(ch.domain_breakdown_bar(df), use_container_width=True)
 
     render_section_header("Top features by |correlation| with target",
                           "Bar length = strength of linear association with `is_top_10`")
-    st.plotly_chart(ch.top_features_correlation_bar(df, top_k=12), width="stretch")
+    st.plotly_chart(ch.top_features_correlation_bar(df, top_k=12), use_container_width=True)
 
     render_section_header("Feature distributions by class",
                           "Pick any numeric feature — overlaid histogram + box plot")
@@ -595,11 +610,11 @@ def tab_eda(state: dict[str, Any]) -> None:
     default_idx = candidate_features.index("word_count") if "word_count" in candidate_features else 0
     selected = st.selectbox("Feature", candidate_features, index=default_idx)
     c1, c2 = st.columns(2)
-    with c1: st.plotly_chart(ch.feature_histogram(df, selected), width="stretch")
-    with c2: st.plotly_chart(ch.feature_box(df, selected), width="stretch")
+    with c1: st.plotly_chart(ch.feature_histogram(df, selected), use_container_width=True)
+    with c2: st.plotly_chart(ch.feature_box(df, selected), use_container_width=True)
 
     render_section_header("Correlation heatmap", "Top-15 features ordered by |ρ| with target")
-    st.plotly_chart(ch.correlation_heatmap(df, top_k=15), width="stretch")
+    st.plotly_chart(ch.correlation_heatmap(df, top_k=15), use_container_width=True)
 
     render_section_header("Two-feature scatter", "Pick two features — class separability sanity check")
     sc1, sc2 = st.columns(2)
@@ -611,7 +626,7 @@ def tab_eda(state: dict[str, Any]) -> None:
         y_feat = st.selectbox("Y axis", candidate_features,
                               index=candidate_features.index("h2_count") if "h2_count" in candidate_features else 1,
                               key="eda_y")
-    st.plotly_chart(ch.feature_target_scatter(df, x_feat, y_feat), width="stretch")
+    st.plotly_chart(ch.feature_target_scatter(df, x_feat, y_feat), use_container_width=True)
 
 
 def tab_graph(state: dict[str, Any]) -> None:
@@ -647,19 +662,19 @@ def tab_graph(state: dict[str, Any]) -> None:
     render_section_header("Centrality distributions",
                           "Heavy-tailed shape is the signature of hub-and-spoke link economies")
     c1, c2 = st.columns([1, 1.3])
-    with c1: st.plotly_chart(ch.pagerank_distribution(df), width="stretch")
-    with c2: st.plotly_chart(ch.degree_scatter(df), width="stretch")
+    with c1: st.plotly_chart(ch.pagerank_distribution(df), use_container_width=True)
+    with c2: st.plotly_chart(ch.degree_scatter(df), use_container_width=True)
 
     render_section_header("HITS hub vs authority",
                           "Top-right quadrant = pages that both link to and are linked from authorities")
-    st.plotly_chart(ch.hits_hub_authority_scatter(df), width="stretch")
+    st.plotly_chart(ch.hits_hub_authority_scatter(df), use_container_width=True)
 
     render_section_header("URL hierarchy network",
                           "Force-directed layout · accent = root domain · indigo = top-10 page")
     max_nodes = st.slider("Max nodes shown", min_value=20, max_value=min(120, len(df)),
                           value=min(80, len(df)), step=10)
     st.plotly_chart(ch.url_hierarchy_network(df, max_nodes=max_nodes),
-                    width="stretch")
+                    use_container_width=True)
 
     render_section_header("Top pages by PageRank",
                           "Highest-authority pages in the corpus — the ones SEO would call \"link magnets\"")
@@ -668,7 +683,7 @@ def tab_graph(state: dict[str, Any]) -> None:
               .copy())
     top["pagerank"] = top["pagerank"].map(lambda v: f"{v:.4f}")
     top["is_top_10"] = top["is_top_10"].map({1: "Yes", 0: "No"})
-    st.dataframe(top, width="stretch", hide_index=True)
+    st.dataframe(top, use_container_width=True, hide_index=True)
 
 
 def tab_models(state: dict[str, Any]) -> None:
@@ -705,8 +720,8 @@ def tab_models(state: dict[str, Any]) -> None:
         })
     if rows:
         render_section_header("Held-out test metrics", "Single 80/20 stratified split, seed 42")
-        st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
-        st.plotly_chart(ch.metrics_comparison_bar(metrics), width="stretch")
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        st.plotly_chart(ch.metrics_comparison_bar(metrics), use_container_width=True)
 
     # ── ROC + PR curves regenerated on the fly ──────────────────────────────
     render_section_header("ROC and precision-recall curves",
@@ -714,8 +729,8 @@ def tab_models(state: dict[str, Any]) -> None:
     roc, pr = model_curves(models, FEATURES_CSV)
     if roc and pr:
         c1, c2 = st.columns(2)
-        with c1: st.plotly_chart(ch.roc_curve_chart(roc), width="stretch")
-        with c2: st.plotly_chart(ch.pr_curve_chart(pr), width="stretch")
+        with c1: st.plotly_chart(ch.roc_curve_chart(roc), use_container_width=True)
+        with c2: st.plotly_chart(ch.pr_curve_chart(pr), use_container_width=True)
     else:
         st.info("Curve regeneration needs `data/processed/features.csv`.")
 
@@ -727,7 +742,7 @@ def tab_models(state: dict[str, Any]) -> None:
         with col:
             cm = confusion_for_model(model, FEATURES_CSV)
             if cm is not None:
-                st.plotly_chart(ch.confusion_matrix_heatmap(cm, name), width="stretch")
+                st.plotly_chart(ch.confusion_matrix_heatmap(cm, name), use_container_width=True)
 
     # ── Feature importance for one chosen model ─────────────────────────────
     render_section_header("Feature importance",
@@ -741,7 +756,7 @@ def tab_models(state: dict[str, Any]) -> None:
         impacts = model_feature_importance(model, feat_cols)
         if impacts:
             st.plotly_chart(ch.feature_importance_bar(impacts, top_k=15, model_name=chosen),
-                            width="stretch")
+                            use_container_width=True)
         else:
             st.info(f"{chosen} doesn't expose a usable importance attribute.")
 
@@ -916,16 +931,12 @@ def main() -> None:
         tab = st.radio("View", NAV_TABS, index=0, label_visibility="collapsed")
         st.markdown("---")
         if sidebar_total:
-            corpus_line = f"{sidebar_total:,} rows"
-            if sidebar_unique != sidebar_total:
-                corpus_line += f" · {sidebar_unique:,} unique URLs"
-            corpus_line += f" · {sidebar_domains} domains"
+            corpus_line = f"{sidebar_total:,} rows · {sidebar_domains} domains"
             st.caption(f"**Corpus**\n\n{corpus_line}")
         st.caption("**Authors**\n\nRahil Patel · Ayush Tripathi")
         st.caption("**Stack**\n\nPython · scikit-learn · XGBoost · "
                    "PyTorch · NetworkX · SHAP · Plotly · Streamlit")
 
-    models = load_models()
     if not FEATURES_CSV.exists():
         st.error(
             f"Missing `{FEATURES_CSV}` — run `make features` (after scrape + SERP) so the "
@@ -933,7 +944,14 @@ def main() -> None:
         )
         st.stop()
 
-    vec, feature_cols = load_corpus_tfidf()
+    # Cold-start loaders: cached after first run, but the first hit can take a
+    # few seconds (model unpickle + TF-IDF refit + median computation). Show a
+    # visible spinner so the user knows something is happening.
+    with st.spinner("Loading models, TF-IDF, and corpus statistics …"):
+        models = load_models()
+        vec, feature_cols = load_corpus_tfidf()
+        graph_medians = load_graph_medians()
+
     if not feature_cols:
         feature_cols = [
             "text_length", "word_count", "sentence_count", "flesch_reading_ease", "keyword_density",
@@ -950,7 +968,8 @@ def main() -> None:
          "models": models, "vec": vec, "feature_cols": feature_cols,
          "features_df": load_features_df(),
          "features_unique_df": load_unique_url_df(),
-         "metrics": load_saved_metrics()},
+         "metrics": load_saved_metrics(),
+         "graph_medians": graph_medians},
     )
     state["models"] = models
     state["vec"] = vec
@@ -958,6 +977,7 @@ def main() -> None:
     state["features_df"] = load_features_df()
     state["features_unique_df"] = load_unique_url_df()
     state["metrics"] = load_saved_metrics()
+    state["graph_medians"] = graph_medians
 
     dispatch = {
         "Predict": tab_predict,

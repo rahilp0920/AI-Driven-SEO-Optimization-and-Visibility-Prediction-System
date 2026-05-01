@@ -35,11 +35,11 @@ CUSTOM_CSS = """
 
 /* ─────────────────────────── shell ─────────────────────────── */
 .stApp {
-    background: linear-gradient(180deg, #f8fafc 0%, #eef2ff 60%, #faf5ff 100%);
+    background: #f8fafc;
     color: var(--text);
 }
-.stApp [data-testid="stAppViewContainer"] > .main { padding-top: 1rem; }
-.block-container { padding-top: 1.25rem !important; padding-bottom: 4rem !important; max-width: 1280px !important; }
+.stApp [data-testid="stAppViewContainer"] > .main { padding-top: 2rem; }
+.block-container { padding-top: 3rem !important; padding-bottom: 4rem !important; max-width: 1280px !important; }
 
 /* Force dark text on the light background — Streamlit's auto-theme can flip
    this to white when the user's OS is dark mode, which kills our charts. */
@@ -81,36 +81,44 @@ CUSTOM_CSS = """
 
 /* ─────────────────────────── sidebar ─────────────────────────── */
 [data-testid="stSidebar"] {
-    background: linear-gradient(180deg, #0b1220 0%, #131c33 100%) !important;
-    border-right: 1px solid rgba(255,255,255,0.05);
+    background: #0f172a !important;
+    border-right: 1px solid rgba(255,255,255,0.06);
 }
 [data-testid="stSidebar"] *,
-[data-testid="stSidebar"] label {
-    color: #cbd5e1 !important;
+[data-testid="stSidebar"] label,
+[data-testid="stSidebar"] p,
+[data-testid="stSidebar"] span,
+[data-testid="stSidebar"] div {
+    color: #f1f5f9 !important;
 }
 [data-testid="stSidebar"] h1,
 [data-testid="stSidebar"] h2,
 [data-testid="stSidebar"] h3 {
     color: #ffffff !important;
 }
+[data-testid="stSidebar"] [data-testid="stCaptionContainer"],
 [data-testid="stSidebar"] [data-testid="stCaptionContainer"] * {
-    color: #94a3b8 !important;
+    color: #cbd5e1 !important;
 }
 /* Sidebar radio: pill-shaped option list. */
 [data-testid="stSidebar"] [role="radiogroup"] > label {
-    background: rgba(255,255,255,0.03);
-    border: 1px solid rgba(255,255,255,0.06);
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.08);
     border-radius: var(--radius-sm);
     padding: 0.55rem 0.85rem;
     margin-bottom: 0.35rem;
     transition: background 120ms ease, border-color 120ms ease;
+    color: #f1f5f9 !important;
+}
+[data-testid="stSidebar"] [role="radiogroup"] > label * {
+    color: #f1f5f9 !important;
 }
 [data-testid="stSidebar"] [role="radiogroup"] > label:hover {
-    background: rgba(255,255,255,0.06);
+    background: rgba(255,255,255,0.08);
 }
 [data-testid="stSidebar"] [role="radiogroup"] > label[data-checked="true"] {
-    background: linear-gradient(135deg, var(--primary), var(--accent));
-    border-color: transparent;
+    background: var(--primary);
+    border-color: var(--primary);
     color: #ffffff !important;
 }
 [data-testid="stSidebar"] [role="radiogroup"] > label[data-checked="true"] * {
@@ -214,28 +222,24 @@ CUSTOM_CSS = """
 }
 
 .banner {
-    background: linear-gradient(135deg, var(--primary) 0%, var(--accent) 100%);
+    background: var(--primary);
     color: white;
     padding: 1.4rem 1.6rem;
     border-radius: var(--radius);
     margin-bottom: 1.5rem;
-    box-shadow: 0 10px 25px -10px rgba(79, 70, 229, 0.5);
+    box-shadow: 0 10px 25px -10px rgba(79, 70, 229, 0.4);
     position: relative;
     overflow: hidden;
-}
-.banner::before {
-    content: "";
-    position: absolute; top: -40%; right: -10%;
-    width: 320px; height: 320px;
-    background: radial-gradient(circle, rgba(255,255,255,0.18) 0%, transparent 70%);
-    pointer-events: none;
 }
 .banner h1 { color: white !important; margin: 0; font-size: 1.6rem; word-break: break-all; }
 .banner .sub { opacity: 0.92; font-size: 0.95rem; margin-top: 0.25rem; }
 
 .section-header {
     display: flex; align-items: baseline; justify-content: space-between;
-    margin: 1.5rem 0 0.4rem 0;
+    margin: 2.25rem 0 0.5rem 0;
+    padding-top: 0.5rem;
+    clear: both;
+    scroll-margin-top: 1rem;
 }
 .section-header h3 { margin: 0; }
 .section-header .hint {
@@ -254,13 +258,23 @@ CUSTOM_CSS = """
 }
 .callout strong { color: var(--primary-dark) !important; }
 
-/* Plotly chart container: card-style frame around every figure. */
+/* Plotly chart container: card-style frame around every figure.
+   The opaque `background` is essential — Plotly figures default to a
+   transparent paper background, and during a Streamlit hot-reload the
+   previous render's DOM can briefly bleed through if the card behind it
+   is also see-through. */
 .stPlotlyChart, [data-testid="stPlotlyChart"] {
     background: var(--bg-card);
     border: 1px solid var(--border);
     border-radius: var(--radius);
     padding: 0.65rem 0.85rem 0.45rem 0.85rem;
     box-shadow: var(--shadow-sm);
+    margin-bottom: 0.6rem;
+    position: relative;
+    z-index: 1;
+}
+.stPlotlyChart .js-plotly-plot, [data-testid="stPlotlyChart"] .js-plotly-plot {
+    background: var(--bg-card) !important;
 }
 
 /* Streamlit dataframe / table. */
@@ -282,12 +296,12 @@ CUSTOM_CSS = """
 }
 .stButton > button:hover { transform: translateY(-1px); box-shadow: var(--shadow-md); }
 .stButton > button[kind="primary"] {
-    background: linear-gradient(135deg, var(--primary), var(--primary-dark));
+    background: var(--primary);
     color: #ffffff !important;
     border: none;
 }
 .stButton > button[kind="primary"]:hover {
-    background: linear-gradient(135deg, #4338ca, #312e81);
+    background: var(--primary-dark);
 }
 
 /* Tabs (when used). */
@@ -311,7 +325,17 @@ CUSTOM_CSS = """
 
 /* Progress bars. */
 .stProgress > div > div > div {
-    background: linear-gradient(90deg, var(--primary), var(--accent)) !important;
+    background: var(--primary) !important;
+}
+
+/* Spinner / loader: make the live "Running..." status more visible. */
+.stSpinner > div { color: var(--primary-dark) !important; font-weight: 600; }
+[data-testid="stStatusWidget"] {
+    background: var(--primary-soft) !important;
+    color: var(--primary-dark) !important;
+    border-radius: var(--radius-sm) !important;
+    padding: 0.25rem 0.6rem !important;
+    font-weight: 600;
 }
 
 /* Hide Streamlit footer + main menu hamburger. */
