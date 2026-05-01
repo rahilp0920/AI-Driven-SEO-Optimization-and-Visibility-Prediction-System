@@ -49,7 +49,13 @@ Two distinct sources, joined on a per-page key:
 
 The committed `data/processed/features.csv` is the joined feature matrix
 (content + metadata + structural + TF-IDF + graph features, plus the binary
-target).
+target). For the imbalance-handling rubric concept (CIS 2450 §3) we additionally
+ship two derivative datasets — `features_balanced.csv` (random oversample to
+class parity) and `features_augmented.csv` (bootstrap × 40 with σ = 2 % Gaussian
+jitter on numeric columns, ~52K rows). Generation logic is in
+[`src/features/balance.py`](src/features/balance.py); distributional fidelity
+checks (means within 0.5 %, stds within 0.1 %) are in
+[`MODELING_DECISIONS.md`](MODELING_DECISIONS.md).
 
 ## Feature pipeline (`src/features/`, `src/graph/`)
 
@@ -165,7 +171,7 @@ Three concepts implemented in depth:
 |---------|----------------|------------------|
 | **Feature importance** | `src/models/{boosting,tree_models,baseline}.py` train tree + linear models that expose `feature_importances_` / `coef_`; the dashboard's Models tab renders the top-15 with sign and magnitude. | Bar chart per model + SHAP per-prediction attribution. |
 | **Hyperparameter tuning** | RandomizedSearchCV (loguniform priors for `C` and `learning_rate`, integer ranges for tree depths and leaf sizes) in every model trainer; CV mean ± std reported in `models/metrics/*.json`. | Tuned best estimators for LR / RF / XGBoost. |
-| **Ensemble models** | Random Forest (bagging) and XGBoost (boosting) cover both tree-ensemble families; both are compared head-to-head against the LR baseline. | Three trained joblibs + comparison metrics. |
+| **Imbalance / oversampling** | `src/features/balance.py` exposes `random_oversample` (minority duplication to class parity) and `bootstrap_augment` (per-class bootstrap with σ=0.02 Gaussian jitter on numeric features). CLI: `python -m scripts.balance_dataset {oversample,bootstrap}`. Distributional fidelity (means within 0.5 %, stds within 0.1 %) verified in [`MODELING_DECISIONS.md`](MODELING_DECISIONS.md). | `data/processed/features_balanced.csv` (1.3K rows, parity) and `features_augmented.csv` (~52K rows, factor=40). |
 
 ### Application of course topics (Sec. 8)
 

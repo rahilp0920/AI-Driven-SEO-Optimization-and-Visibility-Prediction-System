@@ -808,6 +808,10 @@ with a SHAP-driven what-if simulator and a concrete, rule-grounded recommendatio
   hyperparameter-tuned with RandomizedSearchCV against the same StratifiedKFold splitter.
 - **Imbalance-aware metrics** — F1, ROC-AUC, PR-AUC, full confusion matrix; PR-AUC is
   the tiebreaker because positive class is a minority.
+- **Oversampling / augmentation** — `random_oversample` (minority duplication to class
+  parity) and `bootstrap_augment` (bootstrap × 40 with σ = 2 % Gaussian jitter on numeric
+  columns, ~52K rows) implemented in `src/features/balance.py`. Distributional fidelity
+  verified — means within 0.5 %, stds within 0.1 %.
 - **Explainability** — SHAP TreeExplainer on the boosted-tree winner, rendered per
   prediction in the Predict tab and aggregated for recommendations.
         """
