@@ -200,7 +200,7 @@ sped-up audio.
 **Ayush:**
 > Held-out performance on a single 80/20 stratified split, seed
 > 42 — n-test = 260, 131 positive. Random Forest wins on every
-> metric: F1 of 0.90, ROC-AUC of 0.96, PR-AUC of 0.95. XGBoost is
+> metric: F1 of 0.90, ROC-AUC of 0.96 (close to the ideal we mentioned in class), PR-AUC of 0.95. XGBoost is
 > within 0.02 F1, statistically tied. Logistic Regression already
 > gets to 0.87 F1 — strong evidence the engineered features carry
 > real signal. The MLP runs high precision but low recall — exactly
