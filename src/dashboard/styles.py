@@ -10,9 +10,9 @@ from __future__ import annotations
 CUSTOM_CSS = """
 <style>
 :root {
-    --primary: #4f46e5;
-    --primary-dark: #3730a3;
-    --primary-soft: #eef2ff;
+    --primary: #2563eb;
+    --primary-dark: #1d4ed8;
+    --primary-soft: #dbeafe;
     --accent: #ec4899;
     --bg: #0b1220;
     --bg-elev: #111a2e;
@@ -76,7 +76,7 @@ CUSTOM_CSS = """
 .stNumberInput input:focus,
 .stTextArea textarea:focus {
     border-color: var(--primary) !important;
-    box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.15) !important;
+    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.15) !important;
 }
 
 /* ─────────────────────────── sidebar ─────────────────────────── */
@@ -227,7 +227,7 @@ CUSTOM_CSS = """
     padding: 1.4rem 1.6rem;
     border-radius: var(--radius);
     margin-bottom: 1.5rem;
-    box-shadow: 0 10px 25px -10px rgba(79, 70, 229, 0.4);
+    box-shadow: 0 10px 25px -10px rgba(37, 99, 235, 0.4);
     position: relative;
     overflow: hidden;
 }

@@ -55,6 +55,13 @@ from src.recommendations.recommend import recommend, shap_per_prediction
 
 LOG = logging.getLogger("dashboard")
 
+# Silence Streamlit's "Examining the path of torch.classes raised: ..." warning.
+# Streamlit's file watcher walks every imported module's __path__ each rerun;
+# torch.classes deliberately raises when accessed outside a C++ class context,
+# Streamlit catches it but logs at WARNING. Pure noise — fully harmless.
+# See: https://github.com/streamlit/streamlit/issues/9789
+logging.getLogger("streamlit.watcher.local_sources_watcher").setLevel(logging.ERROR)
+
 MLP_PATH = Path("models/mlp_checkpoint.pt")
 XGB_PATH = Path("models/xgboost.joblib")
 RF_PATH = Path("models/random_forest.joblib")
@@ -463,11 +470,25 @@ def tab_predict(state: dict[str, Any]) -> None:
         "match the search intent you want to evaluate against."
     )
 
-    url = st.text_input("Page URL", value=state.get("url", ""),
-                        placeholder="https://docs.python.org/3/library/asyncio.html")
+    # Seed widget state once. Using explicit keys (rather than `value=`) so the
+    # text inputs survive Enter-key reruns without snapping back to the stale
+    # state value when the Scrape button hasn't been clicked yet.
+    # A "_pending" slot is used to push values into the widgets across reruns,
+    # because Streamlit forbids modifying st.session_state[<widget_key>] after
+    # the widget has been instantiated in the current run.
+    if "_predict_query_pending" in st.session_state:
+        st.session_state["predict_query_input"] = st.session_state.pop("_predict_query_pending")
+    if "predict_url_input" not in st.session_state:
+        st.session_state["predict_url_input"] = state.get("url", "")
+    if "predict_query_input" not in st.session_state:
+        st.session_state["predict_query_input"] = state.get("query", "")
+
+    url = st.text_input(
+        "Page URL", key="predict_url_input",
+        placeholder="https://docs.python.org/3/library/asyncio.html",
+    )
     query_input = st.text_input(
-        "Topic query (override)",
-        value=state.get("query", ""),
+        "Topic query (override)", key="predict_query_input",
         help="Auto-filled from the page <title> after scraping. Edit to evaluate "
              "against a different search intent.",
     )
@@ -491,11 +512,21 @@ def tab_predict(state: dict[str, Any]) -> None:
             )
         else:
             soup, text = res
-            query = query_input.strip() or derive_query(soup) or "(no title)"
+            user_typed_query = query_input.strip()
+            derived = derive_query(soup) or "(no title)"
+            query = user_typed_query or derived
             features = featurize(url, soup, text, query, vec, feature_cols,
                                  graph_defaults=graph_defaults)
             state.update(features=features, url=url, query=query, source="live",
                          soup=soup, text=text)
+            # If the user didn't type their own query, surface the derived one
+            # in the override box so they can see and edit it. The widget key
+            # has already been instantiated this run — push the new value via a
+            # "_pending" slot that gets applied before the widget renders next
+            # rerun.
+            if not user_typed_query and query_input != derived:
+                st.session_state["_predict_query_pending"] = derived
+                st.rerun()
 
     if do_requery and query_input.strip():
         new_query = query_input.strip()
@@ -626,7 +657,14 @@ def tab_eda(state: dict[str, Any]) -> None:
         y_feat = st.selectbox("Y axis", candidate_features,
                               index=candidate_features.index("h2_count") if "h2_count" in candidate_features else 1,
                               key="eda_y")
-    st.plotly_chart(ch.feature_target_scatter(df, x_feat, y_feat), use_container_width=True)
+    # Augmented rows are bootstrap duplicates of the same URLs with jitter —
+    # they would just inflate the cloud without adding information. Plot the
+    # unique-URL view (~1.3K points), which also keeps the scatter responsive.
+    scatter_df = state.get("features_unique_df", df)
+    if scatter_df.empty:
+        scatter_df = df
+    st.plotly_chart(ch.feature_target_scatter(scatter_df, x_feat, y_feat),
+                    use_container_width=True)
 
 
 def tab_graph(state: dict[str, Any]) -> None:
@@ -731,18 +769,32 @@ def tab_models(state: dict[str, Any]) -> None:
         c1, c2 = st.columns(2)
         with c1: st.plotly_chart(ch.roc_curve_chart(roc), use_container_width=True)
         with c2: st.plotly_chart(ch.pr_curve_chart(pr), use_container_width=True)
+        st.caption(
+            "**Precision vs. recall tradeoff:** lowering the decision threshold flags more "
+            "pages as top-10 — recall climbs, but precision drops as more false positives "
+            "leak in. Raising the threshold does the opposite. The PR curve makes this "
+            "tradeoff explicit (note the steep right-edge drop near recall = 1.0); "
+            "**PR-AUC** is our tiebreaker because the positive class is the minority."
+        )
     else:
         st.info("Curve regeneration needs `data/processed/features.csv`.")
 
     # ── Confusion matrices side by side ─────────────────────────────────────
     render_section_header("Confusion matrices",
                           "Recomputed on the held-out split — rows are actual, columns are predicted")
-    cm_cols = st.columns(len(models))
-    for col, (name, model) in zip(cm_cols, sorted(models.items())):
-        with col:
-            cm = confusion_for_model(model, FEATURES_CSV)
-            if cm is not None:
-                st.plotly_chart(ch.confusion_matrix_heatmap(cm, name), use_container_width=True)
+    sorted_models = sorted(models.items())
+    for row_start in range(0, len(sorted_models), 2):
+        row = sorted_models[row_start:row_start + 2]
+        cm_cols = st.columns(2, gap="large")
+        for col, (name, model) in zip(cm_cols, row):
+            with col:
+                cm = confusion_for_model(model, FEATURES_CSV)
+                if cm is not None:
+                    st.plotly_chart(
+                        ch.confusion_matrix_heatmap(cm, name),
+                        use_container_width=True,
+                        config={"displayModeBar": False},
+                    )
 
     # ── Feature importance for one chosen model ─────────────────────────────
     render_section_header("Feature importance",
@@ -757,6 +809,22 @@ def tab_models(state: dict[str, Any]) -> None:
         if impacts:
             st.plotly_chart(ch.feature_importance_bar(impacts, top_k=15, model_name=chosen),
                             use_container_width=True)
+            if chosen == "logreg":
+                st.caption(
+                    "Logistic regression uses **signed coefficients** — a positive bar "
+                    "(blue) means *increasing this feature raises* the predicted probability "
+                    "of being in the top-10, and a negative bar (red) means it *lowers* it. "
+                    "Tree models (Random Forest, XGBoost) report split-gain importance, which "
+                    "is non-negative by construction and captures only how *useful* a feature "
+                    "is, not its direction."
+                )
+            else:
+                st.caption(
+                    "Tree split-gain importance is always non-negative — it measures how "
+                    "much the feature reduced impurity across all splits, not the direction "
+                    "of its effect. For a directional view, switch the model selector to "
+                    "**logreg**."
+                )
         else:
             st.info(f"{chosen} doesn't expose a usable importance attribute.")
 

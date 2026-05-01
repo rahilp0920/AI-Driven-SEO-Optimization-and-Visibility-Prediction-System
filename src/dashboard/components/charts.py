@@ -19,7 +19,7 @@ from plotly.subplots import make_subplots
 
 # Shared palette — keep aligned with styles.py CSS variables so the chart
 # colors look intentional next to the metric cards / banners.
-PRIMARY = "#4f46e5"
+PRIMARY = "#2563eb"
 ACCENT = "#ec4899"
 GOOD = "#10b981"
 BAD = "#ef4444"
@@ -136,15 +136,24 @@ def correlation_heatmap(df: pd.DataFrame, top_k: int = 15,
 
 
 def feature_target_scatter(df: pd.DataFrame, x: str, y: str,
-                           target_col: str = "is_top_10") -> go.Figure:
-    """Scatter of two features colored by class — class separability sanity check."""
+                           target_col: str = "is_top_10",
+                           max_points_per_class: int = 2000) -> go.Figure:
+    """Scatter of two features colored by class — class separability sanity check.
+
+    Uses ``go.Scattergl`` (WebGL) instead of SVG so it stays smooth past a few
+    thousand points, and caps each class to ``max_points_per_class`` via
+    deterministic random sampling — large augmented dataframes (50K+ rows) used
+    to lock the browser when every row materialised as a DOM element.
+    """
     fig = go.Figure()
     for cls in sorted(df[target_col].unique()):
         sub = df[df[target_col] == cls]
-        fig.add_trace(go.Scatter(
+        if len(sub) > max_points_per_class:
+            sub = sub.sample(n=max_points_per_class, random_state=42)
+        fig.add_trace(go.Scattergl(
             x=sub[x], y=sub[y], mode="markers",
             name=CLASS_LABELS.get(int(cls), str(cls)),
-            marker=dict(color=CLASS_COLORS.get(int(cls), MUTED), size=9, opacity=0.75,
+            marker=dict(color=CLASS_COLORS.get(int(cls), MUTED), size=8, opacity=0.7,
                         line=dict(width=0.5, color="#0f172a")),
             text=sub.get("url", pd.Series([""] * len(sub))),
             hovertemplate="<b>%{text}</b><br>" + f"{x}: " + "%{x}<br>"
@@ -348,12 +357,23 @@ def confusion_matrix_heatmap(cm: list[list[int]], model_name: str) -> go.Figure:
         z=z, x=labels, y=labels,
         colorscale=[[0.0, "#ffffff"], [1.0, PRIMARY]],
         showscale=False,
-        text=annot, texttemplate="%{text}", textfont=dict(size=18, color="#0f172a"),
+        text=annot, texttemplate="%{text}", textfont=dict(size=22, color="#0f172a"),
         hovertemplate="True: %{y}<br>Pred: %{x}<br>Count: %{z}<extra></extra>",
+        xgap=4, ygap=4,
     ))
-    fig.update_xaxes(title="Predicted", side="bottom")
-    fig.update_yaxes(title="Actual", autorange="reversed")
-    return _apply_layout(fig, height=300, title=f"{model_name} confusion matrix")
+    fig.update_xaxes(
+        title=dict(text="Predicted", font=dict(size=12), standoff=10),
+        side="bottom", tickangle=0, tickfont=dict(size=12),
+        showgrid=False, ticks="", scaleanchor="y", scaleratio=1, constrain="domain",
+    )
+    fig.update_yaxes(
+        title=dict(text="Actual", font=dict(size=12), standoff=10),
+        autorange="reversed", tickangle=0, tickfont=dict(size=12),
+        showgrid=False, ticks="", constrain="domain",
+    )
+    fig = _apply_layout(fig, height=360, title=f"{model_name} confusion matrix")
+    fig.update_layout(margin=dict(l=80, r=30, t=48, b=60))
+    return fig
 
 
 def feature_importance_bar(importances: dict[str, float], top_k: int = 15,
