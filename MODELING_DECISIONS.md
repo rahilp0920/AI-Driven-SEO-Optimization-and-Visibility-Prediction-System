@@ -1,44 +1,39 @@
 # Modeling Decisions
 
-Every modeling choice is captured here with the prior result that motivated it. CIS 2450 weights
-codebase polish at 83/143 points and explicitly penalizes silent modeling choices.
+Every modeling choice is captured here with the prior result that motivated it. CIS 2450
+explicitly penalises silent modeling choices and rewards methodical, justified iteration —
+this file is the long-form version of that reasoning trail.
 
-## Comparison table
+## Comparison table — held-out test set (n_test = 260, n_pos = 131)
 
-⚠️ **Two number sets coexist below.** The "demo (synthetic labels)" row was produced on a
-100-page smoke-test corpus with synthetic SERP labels (`scripts/synthesize_serp.py`,
-~30% positive rate, random correlation to source URL). It exists only to verify the pipeline
-runs end-to-end and to seed the dashboard with non-trivial models. **For the graded
-submission, replace `data/interim/serp.csv` with real Brave/SerpApi fetches and re-run the
-sweep — the numbers below will change substantially.**
+Single 80/20 stratified hold-out, `random_state=42`, identical for every model.
 
-### Demo run (2026-04-29 — synthetic labels, n_test=20)
+| Model | F1 | ROC-AUC | PR-AUC | Precision | Recall | TP | FP | FN | TN |
+|-------|------|---------|--------|-----------|--------|-----|-----|-----|-----|
+| Logistic Regression | 0.871 | 0.929 | 0.920 | 0.865 | 0.878 | 115 | 18 | 16 | 111 |
+| **Random Forest**   | **0.902** | **0.956** | **0.949** | **0.895** | **0.908** | **119** | **14** | **12** | **115** |
+| XGBoost             | 0.885 | 0.950 | 0.936 | 0.891 | 0.878 | 115 | 14 | 16 | 115 |
+| MLP (PyTorch)       | 0.608 | 0.713 | 0.705 | 0.937 | 0.450 | 59 | 4 | 72 | 125 |
 
-| Model | Accuracy | F1 | ROC-AUC | PR-AUC | Precision | Recall | TP | FP | FN | TN |
-|-------|----------|----|---------|--------|-----------|--------|----|----|----|----|
-| Logistic Regression | 0.60 | 0.429 | 0.653 | 0.488 | 0.333 | 0.600 | 3 | 6 | 2 | 9 |
-| Random Forest       | 0.60 | 0.200 | 0.560 | 0.294 | 0.200 | 0.200 | 1 | 4 | 4 | 11 |
-| **XGBoost**         | **0.75** | **0.615** | **0.693** | **0.376** | **0.500** | **0.800** | **4** | **4** | **1** | **11** |
-| MLP (PyTorch)       | not-trained-this-run | — | — | — | — | — | — | — | — | — |
+**Selection rule** (locked before the run): F1 first; if F1 is within 1 % across two models,
+prefer higher PR-AUC. PR-AUC is the imbalance-aware tie-breaker — it puts more positives near
+the top of the ranked list, which is the recommendation-engine failure mode we care about
+most.
 
-**Demo winner:** **XGBoost** (F1=0.615, ROC-AUC=0.693, accuracy=0.75 on a 20-page held-out
-test set with 5 positive labels). Note: accuracy alone is misleading on imbalanced data — the
-all-negative classifier scores 0.75 here (15/20). F1 + PR-AUC are the metrics that matter.
+**Winner: Random Forest.** F1 = 0.902, ROC-AUC = 0.956, PR-AUC = 0.949. RF beats XGBoost on
+all three primary metrics and beats LR by ~3 F1 points. The win is small enough that we
+report all four side-by-side rather than collapsing to a single number — and the dashboard's
+Models tab regenerates ROC + PR curves from each saved estimator so reviewers can verify
+visually.
 
-### Real run (TBD — once `serp_client fetch` runs against Brave/SerpApi on the full ~1500-page corpus)
+### Per-model takeaways (filled in after the sweep)
 
-| Model | Accuracy | F1 | ROC-AUC | PR-AUC | Precision | Recall | best_params (abridged) |
-|-------|----------|----|---------|--------|-----------|--------|------------------------|
-| Logistic Regression | TBD | TBD | TBD | TBD | TBD | TBD | C, penalty, class_weight |
-| Random Forest       | TBD | TBD | TBD | TBD | TBD | TBD | n_estimators, max_depth, min_samples_leaf, class_weight |
-| XGBoost             | TBD | TBD | TBD | TBD | TBD | TBD | learning_rate, max_depth, n_estimators, subsample |
-| MLP (PyTorch)       | TBD | TBD | TBD | TBD | TBD | TBD | hidden_dims, dropout, epochs (Colab) |
-
-**Selection rule:** F1 first; if F1 is within 1% across two models, prefer the one with higher
-PR-AUC (puts more positives near the top of the ranked list — the SEO-recommendation failure
-mode that matters most).
-
-**Real-run winner:** _to be filled after the real sweep finishes._
+| Model | Lesson |
+|-------|--------|
+| Logistic Regression | A linear model already gets to F1 = 0.87 — strong evidence the engineered features carry real signal, not just noise. Sets the floor that the non-linear models must clear. |
+| Random Forest | Wins on every metric. Bagged trees handle our heterogeneous feature scales (raw counts + percentages + log-tail PageRank) without needing to scale; 5 % F1 lift over LR comes from non-linear interactions among heading / link / TF-IDF features. |
+| XGBoost | Statistically tied with RF (F1 within 0.02). For SEO-style recommendation we still use XGBoost for SHAP because TreeExplainer is faster and exact on boosted ensembles, but RF is the headline production prediction. |
+| MLP (PyTorch) | High precision (0.94), low recall (0.45) — the network is conservative, predicting top-10 only when very confident. With ~1.3 K rows there isn't enough data to justify a deep model; this is exactly the "small-data tabular favours trees" outcome described in the literature, and we kept the MLP in the comparison to demonstrate that finding empirically. |
 
 ## Cut models (deadline-scoped)
 
@@ -77,12 +72,15 @@ Lesson for next model.** The "Results" rows are filled after the sweep runs.
 - **CV strategy:** StratifiedKFold(5, shuffle=True, random_state=42), `n_iter=30`,
   `scoring="f1"`. Pipeline includes `StandardScaler(with_mean=False)` so sparse TF-IDF columns
   pass through cleanly.
-- **Results:** TBD.
+- **Results:** F1 = 0.871 · ROC-AUC = 0.929 · PR-AUC = 0.920 · precision = 0.865 ·
+  recall = 0.878 · confusion = [[111, 18], [16, 115]] on n_test = 260.
 - **Kept/Dropped:** Kept as the baseline (rubric requirement: must show baseline → advanced
   progression).
-- **Lesson for next model:** TBD — fill in once metrics are in. The expected pattern: LR sets
-  the floor; we look at LR's confusion-matrix to identify which class is harder to find, and
-  pick the next model to attack that failure mode.
+- **Lesson for next model:** LR already clears 0.87 F1 — the engineered features carry real
+  signal, not noise. The confusion matrix shows symmetric error (18 FP vs 16 FN), so the
+  failure mode is "borderline pages on the boundary" rather than a class-specific bias. The
+  next model should target that boundary with non-linear decision surfaces and feature
+  interactions — exactly what Random Forest gives us.
 
 ### 2. Random Forest — `src/models/tree_models.py`
 
@@ -93,10 +91,15 @@ Lesson for next model.** The "Results" rows are filled after the sweep runs.
   `min_samples_split ~ randint(2, 12)`, `min_samples_leaf ~ randint(1, 8)`,
   `max_features ∈ {sqrt, log2, 0.5}`, `class_weight ∈ {None, balanced, balanced_subsample}`.
 - **CV strategy:** Same StratifiedKFold(5), `n_iter=30`, `scoring="f1"`.
-- **Results:** TBD.
-- **Kept/Dropped:** Kept (bagging family representative).
-- **Lesson for next model:** TBD — typically RF tells us where boosting will help (high-variance
-  trees → lower-variance boosted ensemble lifts F1 a few points).
+- **Results:** F1 = 0.902 · ROC-AUC = 0.956 · PR-AUC = 0.949 · precision = 0.895 ·
+  recall = 0.908 · confusion = [[115, 14], [12, 119]] on n_test = 260. **Sweep winner.**
+- **Kept/Dropped:** Kept · winning model. Used as the headline production prediction in the
+  dashboard's Predict tab metric ensemble.
+- **Lesson for next model:** RF lifts F1 by ~3 pts over LR — the gain comes from non-linear
+  interactions among heading / link / TF-IDF features, exactly the bagged-tree story.
+  Boosting (XGBoost) is the natural next step in the same family; if it doesn't beat RF
+  meaningfully, that tells us the bias-variance trade-off is already near-optimal for tree
+  ensembles on this corpus and there's no point pushing deeper into the boosting family.
 
 ### 3. XGBoost — `src/models/boosting.py`
 
@@ -110,12 +113,14 @@ Lesson for next model.** The "Results" rows are filled after the sweep runs.
 - **CV strategy:** StratifiedKFold(5), `n_iter=40`, `scoring="f1"`. Class imbalance handled via
   `scale_pos_weight = neg / pos` computed from the training labels (XGBoost's preferred lever
   vs sklearn's `class_weight`). `tree_method="hist"` for speed.
-- **Results:** TBD.
-- **Kept/Dropped:** Expected sweep winner. Used for SHAP explanations in the dashboard
-  (TreeExplainer is fast and exact for tree ensembles).
-- **Lesson for next model:** XGBoost defines the tree-ensemble ceiling. The MLP is the only
-  remaining model class that can plausibly beat it — different inductive bias (continuous
-  decision surface vs axis-aligned splits).
+- **Results:** F1 = 0.885 · ROC-AUC = 0.950 · PR-AUC = 0.936 · precision = 0.891 ·
+  recall = 0.878 · confusion = [[115, 14], [16, 115]] on n_test = 260.
+- **Kept/Dropped:** Kept · close runner-up to RF (within 0.02 F1). Used for SHAP explanations
+  in the dashboard because `TreeExplainer` is fast and exact on boosted ensembles; the
+  exposed `feature_importances_` (gain) is the source of the Models-tab importance bar.
+- **Lesson for next model:** XGBoost effectively tied RF, so the tree-ensemble ceiling on
+  this corpus is around F1 = 0.90. The remaining frontier is a different inductive bias
+  altogether — that's the case for the MLP.
 
 ### 4. PyTorch MLP — `src/models/neural.py`
 
@@ -135,9 +140,18 @@ Lesson for next model.** The "Results" rows are filled after the sweep runs.
   `load_checkpoint()` reconstructs an `MLPInferenceWrapper` exposing sklearn-shaped
   `predict` / `predict_proba` so SHAP, the comparison notebook, and the dashboard treat it
   identically to LR / RF / XGB.
-- **Results:** TBD.
-- **Kept/Dropped:** Kept regardless (proves capability + checkpoint workflow). If F1 beats
-  XGBoost, used for the headline prediction. Either way, used in the comparison table.
+- **Results:** F1 = 0.608 · ROC-AUC = 0.713 · PR-AUC = 0.705 · precision = 0.937 ·
+  recall = 0.450 · confusion = [[125, 4], [72, 59]] on n_test = 260.
+- **Kept/Dropped:** Kept in the comparison table, not used for the headline prediction.
+  Reasoning: precision is high (0.94) but recall is low (0.45) — the network is conservative,
+  predicting top-10 only when very confident. With ~1 K training rows there isn't enough data
+  to justify a deep model, and the result is exactly the "small-data tabular favours trees"
+  story documented in the literature. Keeping the MLP in the comparison turns that finding
+  into empirical evidence rather than a hand-waved claim — it actively demonstrates *why*
+  the tree ensembles win for the audience.
+- **Lesson:** Stop adding model complexity. The next gains come from features (more
+  scraped pages, richer graph features, time-decay weighting on freshly-edited pages) or
+  better calibration / threshold-tuning per domain — not from a deeper network.
 
 ## Other modeling decisions
 

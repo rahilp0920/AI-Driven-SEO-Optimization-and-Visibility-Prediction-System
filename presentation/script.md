@@ -199,14 +199,14 @@ sped-up audio.
 
 **Ayush:**
 > Held-out performance on a single 80/20 stratified split, seed
-> 42. The grouped bar chart shows F1, ROC-AUC, and PR-AUC across
-> the four models. XGBoost wins on F1 and PR-AUC — which we'd
-> expect for tabular binary classification at this scale. The
-> winner banner on the right shows the headline numbers, and below
-> it the confusion matrix on the held-out test set: most errors
-> are false negatives, which is the more forgiving direction —
-> we'd rather the recommendation engine miss a future top-10 page
-> than tell an author their already-good page needs work.
+> 42 — n-test = 260, 131 positive. Random Forest wins on every
+> metric: F1 of 0.90, ROC-AUC of 0.96, PR-AUC of 0.95. XGBoost is
+> within 0.02 F1, statistically tied. Logistic Regression already
+> gets to 0.87 F1 — strong evidence the engineered features carry
+> real signal. The MLP runs high precision but low recall — exactly
+> the small-data tabular pattern where the literature says trees
+> should win, and we kept it in the comparison to show that finding
+> empirically rather than just claiming it.
 
 *[~45 s]*
 
