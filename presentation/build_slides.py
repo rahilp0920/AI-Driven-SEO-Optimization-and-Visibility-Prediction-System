@@ -1010,11 +1010,14 @@ def slide_challenges(prs: Presentation, idx: int, total: int) -> None:
     lcard.shadow.inherit = False
     _add_pill(s, lx + Inches(0.3), base_y + Inches(0.3), "Challenges", BAD)
     challenges = [
+        ("No source-reputation signal",
+         "We score the page itself — text, structure, link topology — "
+         "not the domain's editorial authority. docs.python.org and a "
+         "personal blog with the same heading layout score equally; real "
+         "Google ranking weighs reputation heavily."),
         ("Free-tier API limits",
          "Brave Search caps at ~2K queries/month — bounded the corpus "
          "to ~1.3K pages."),
-        ("Class imbalance in raw labels",
-         "Mitigated with class_weight + minority oversampling to parity."),
         ("Live URLs lack graph signal",
          "Page isn't in the training graph; we median-fill its graph "
          "features rather than zero-fill (zero biases predictions down)."),
@@ -1041,17 +1044,19 @@ def slide_challenges(prs: Presentation, idx: int, total: int) -> None:
     rcard.shadow.inherit = False
     _add_pill(s, rx + Inches(0.3), base_y + Inches(0.3), "Future work", GOOD)
     futures = [
+        ("Domain-authority feature",
+         "Augment the matrix with an external authority signal "
+         "(Tranco rank, Majestic Trust Flow) so the model can "
+         "distinguish official-docs from third-party content — "
+         "directly addresses the reputation gap."),
         ("Per-domain calibrated thresholds",
          "0.5 cutoff is naive — real SERPs differ in expected positive "
-         "rate per domain. Calibrate via Platt / isotonic on a held-out "
-         "validation slice per host."),
-        ("Periodic re-scrape + drift monitor",
-         "SERP rankings shift weekly. Schedule a refresh, log feature "
-         "drift between snapshots, retrigger training when drift > τ."),
+         "rate per domain. Platt / isotonic on a held-out validation "
+         "slice per host."),
         ("Recommendation A/B harness",
          "Apply a recommended change to a copy of a page, re-scrape, "
          "compare actual rank movement against predicted lift — closes "
-         "the loop on whether the model is causal or merely correlated."),
+         "the loop on causal vs correlated."),
         ("Cross-engine generalisation",
          "Today: Google via Brave / SerpApi. Add Bing / DuckDuckGo "
          "labels — does the same model rank well across engines?"),

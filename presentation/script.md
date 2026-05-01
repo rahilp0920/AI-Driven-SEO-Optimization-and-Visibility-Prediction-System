@@ -265,15 +265,26 @@ sped-up audio.
 ### Slide 12 — Challenges & future work · **[8:10 — 8:50]**
 
 **Ayush:**
-> Four challenges, four next steps.
+> Four limitations worth calling out, then four next steps.
 
-> Challenges: free-tier API limits bounded the corpus size. Class
-> imbalance was real and we mitigated with weighting and
-> oversampling. Live URLs aren't in the training graph, so we
-> median-fill their graph features rather than zero-fill — zero
-> would bias predictions down. And title-derived queries can
-> mislead, so the dashboard exposes a manual query override for
-> evaluation.
+> First and biggest — we're a page-level feature predictor, not a
+> reputation estimator. We extract structural and link-graph
+> features from the page itself; we *don't* encode that
+> docs.python.org is a Tier-1 authoritative source, or that
+> React's official site at react.dev outweighs a personal blog
+> post by reputation alone. Two equally-well-structured pages get
+> judged identically even if one is the canonical project and one
+> is a low-trust domain. Real Google ranking weighs domain
+> authority and editorial reputation heavily — signals that are
+> external to any single page and outside our feature space.
+> Adding an external authority feature, like Tranco rank, is the
+> obvious next step.
+
+> Second, free-tier API limits bounded the corpus size. Third,
+> live URLs aren't in the training graph, so we median-fill their
+> graph features rather than zero-fill — zero would bias
+> predictions down. Fourth, title-derived queries can mislead, so
+> the dashboard exposes a manual query override for evaluation.
 
 > Future work: per-domain calibrated thresholds instead of a
 > blanket 0.5 cutoff; periodic re-scrape with drift monitoring
